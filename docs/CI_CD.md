@@ -43,8 +43,11 @@ Two optional workflows run on pull requests when configured:
 - `security-review.yml` — security review using Claude via Vertex AI (Workload
   Identity Federation, no static key).
 
-Both no-op gracefully when their secrets are unset. The `terraform/` directory
-provisions the required GCP resources and GitHub secrets — see
+Both **skip (stay green)** when their secrets are unset: `ai-review` exits early
+without a `GEMINI_API_KEY`, and `security-review` skips unless
+`GCP_WORKLOAD_IDENTITY_PROVIDER` is configured. So a fork that hasn't provisioned
+the reviewer kit still gets green PRs. The `terraform/` directory provisions the
+required GCP resources and GitHub secrets — see
 [`terraform/README.md`](../terraform/README.md).
 
 ### 2. Automerge Workflow (`.github/workflows/automerge.yml`)

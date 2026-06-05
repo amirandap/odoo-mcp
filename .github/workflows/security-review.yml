@@ -5,9 +5,29 @@ on:
     types: [opened, synchronize, ready_for_review]
 
 jobs:
+  config:
+    name: Resolve reviewer config
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.c.outputs.enabled }}
+    env:
+      # secrets cannot be used in job-level if:, so resolve presence into an output.
+      WIF_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+    steps:
+      - id: c
+        run: |
+          if [ -n "$WIF_PROVIDER" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Security reviewer skipped: GCP_WORKLOAD_IDENTITY_PROVIDER not set (provision via terraform/ to enable)."
+          fi
+
   security_review:
     name: AI Security Review
-    if: github.event.pull_request.draft == false
+    needs: config
+    # Skips (stays green) when the Vertex/WIF reviewer infrastructure is not provisioned.
+    if: ${{ needs.config.outputs.enabled == 'true' && github.event.pull_request.draft == false }}
     runs-on: ubuntu-latest
 
     permissions:
