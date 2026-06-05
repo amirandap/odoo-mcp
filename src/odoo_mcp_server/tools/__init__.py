@@ -1,5 +1,7 @@
 """MCP tools for Odoo operations."""
 
+from collections.abc import Iterable
+
 from .employee import EMPLOYEE_TOOLS, execute_employee_tool
 from .records import TOOLS as CRUD_TOOLS
 from .records import execute_tool as execute_crud_tool
@@ -9,32 +11,59 @@ __all__ = [
     "CRUD_TOOLS",
     "EMPLOYEE_TOOLS",
     "SIGN_TOOLS",
+    "TOOL_GROUPS",
+    "DEFAULT_TOOL_GROUPS",
     "execute_crud_tool",
     "execute_employee_tool",
     "execute_sign_tool",
     "register_tools",
     "register_employee_tools",
+    "tool_group_for",
     "execute_tool",
 ]
 
+# Tool groups that can be enabled/disabled per deployment (see ENABLED_TOOL_GROUPS).
+TOOL_GROUPS: dict[str, list] = {
+    "crud": CRUD_TOOLS,
+    "employee": EMPLOYEE_TOOLS,
+    "sign": SIGN_TOOLS,
+}
 
-def register_tools(include_sign: bool = True):
-    """Return list of all available tools.
+# Stock default when nothing is configured.
+DEFAULT_TOOL_GROUPS = ("crud", "employee")
 
-    Sign tools require the optional OCA `sign_oca` addon and are only included
-    when ``include_sign`` is True (driven by SIGN_MODULE_ENABLED).
+# Reverse lookup: tool name -> group.
+_TOOL_NAME_TO_GROUP = {
+    tool.name: group for group, tools in TOOL_GROUPS.items() for tool in tools
+}
+
+
+def tool_group_for(name: str) -> str | None:
+    """Return the group ('crud' | 'employee' | 'sign') a tool belongs to, or None."""
+    return _TOOL_NAME_TO_GROUP.get(name)
+
+
+def register_tools(groups: Iterable[str] = DEFAULT_TOOL_GROUPS):
+    """Return the tools for the enabled groups, in stable group order.
+
+    ``groups`` selects among 'crud', 'employee', and 'sign'. Sign tools also
+    require the optional OCA `sign_oca` addon at runtime.
     """
-    tools = CRUD_TOOLS + EMPLOYEE_TOOLS
-    if include_sign:
-        tools = tools + SIGN_TOOLS
+    groups = set(groups)
+    tools: list = []
+    for group in ("crud", "employee", "sign"):
+        if group in groups:
+            tools = tools + TOOL_GROUPS[group]
     return tools
 
 
-def register_employee_tools(include_sign: bool = True):
-    """Return list of employee self-service tools."""
-    tools = list(EMPLOYEE_TOOLS)
-    if include_sign:
-        tools = tools + SIGN_TOOLS
+def register_employee_tools(groups: Iterable[str] = ("employee", "sign")):
+    """Return employee self-service tools for the enabled groups."""
+    groups = set(groups)
+    tools: list = []
+    for group in ("employee", "sign"):
+        if group in groups:
+            tools = tools + TOOL_GROUPS[group]
     return tools
 
 

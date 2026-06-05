@@ -129,10 +129,19 @@ Odoo with no extra configuration.
 
 | Setting | Purpose |
 |---------|---------|
+| `ENABLED_TOOL_GROUPS` | Comma-separated tool groups to expose: `crud`, `employee` (default `crud,employee`). Use `crud` for a generic admin bridge or `employee` for self-service only. |
 | `EMPLOYEE_CUSTOM_FIELDS` | JSON map of output key → custom `hr.employee` field, e.g. `{"preferred_name":"x_preferred_name","division":"x_division"}`. Surfaced on `get_my_profile`. |
 | `DMS_ALLOWED_FOLDERS` / `DMS_RESTRICTED_FOLDERS` | Comma-separated document folder names employees may see vs. must never see. |
 | `SIGN_MODULE_ENABLED` | Expose the OCA Sign tools (requires the `sign_oca` addon). |
 | `INTERNAL_EMAIL_DOMAIN` | Users whose email matches this domain receive extended write scopes. |
+| `YOLO_MODE` | `read` = no-auth read-only (only read tools exposed); `true` = no-auth full access. For trusted/local use only. |
+
+### Deployment modes
+
+The server runs anywhere from a single trusted-network Odoo with no auth, to a
+multi-user, multi-environment OAuth deployment. See
+**[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** for copy-paste recipes (no-auth/read-only,
+single-identity API key, Google OAuth, custom OIDC, stdio) and how to pick tool groups.
 
 ## Claude Desktop Integration
 

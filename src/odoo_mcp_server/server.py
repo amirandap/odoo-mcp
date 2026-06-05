@@ -62,7 +62,7 @@ async def lifespan():
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     """Return available tools"""
-    return register_tools(include_sign=settings.sign_module_enabled)
+    return register_tools(settings.effective_tool_groups)
 
 
 @server.call_tool()

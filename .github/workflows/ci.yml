@@ -15,6 +15,32 @@ env:
   GCP_REGION: ${{ vars.GCP_REGION || 'europe-west1' }}
 
 jobs:
+  config:
+    name: Resolve deployment config
+    runs-on: ubuntu-latest
+    outputs:
+      has_staging: ${{ steps.resolve.outputs.has_staging }}
+    env:
+      # secrets cannot be used in job-level if:, so we resolve presence into an output.
+      STAGING_ODOO_URL: ${{ secrets.STAGING_ODOO_URL }}
+    steps:
+      - id: resolve
+        name: Detect staging environment
+        run: |
+          if [ -n "$STAGING_ODOO_URL" ]; then
+            echo "has_staging=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_staging=false" >> "$GITHUB_OUTPUT"
+          fi
+          # Single-instance deployments leave REQUIRE_STAGING unset and stay green when
+          # no staging Odoo is configured. Two-environment adopters set the repository
+          # variable REQUIRE_STAGING=true; a missing STAGING_ODOO_URL is then a real
+          # misconfiguration and fails CI (documented behaviour, see docs/CI_CD.md).
+          if [ "${{ vars.REQUIRE_STAGING }}" = "true" ] && [ -z "$STAGING_ODOO_URL" ]; then
+            echo "::error::REQUIRE_STAGING=true but the STAGING_ODOO_URL secret is not set."
+            exit 1
+          fi
+
   lint:
     name: Lint & Type Check
     runs-on: ubuntu-latest
@@ -70,8 +96,10 @@ jobs:
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
-    # Only run on main branch or when explicitly requested
-    if: github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'run-integration')
+    needs: [config]
+    # Runs only when a staging Odoo is configured (STAGING_ODOO_URL set), on main or
+    # with the run-integration label. Single-instance repos skip this (stay green).
+    if: ${{ needs.config.outputs.has_staging == 'true' && (github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'run-integration')) }}
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -99,9 +127,9 @@ jobs:
   e2e-tests:
     name: E2E MCP HTTP Tests
     runs-on: ubuntu-latest
-    needs: [lint, unit-tests]
-    # Run on main branch or when explicitly requested via label
-    if: github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'run-integration')
+    needs: [config, lint, unit-tests]
+    # Runs only when a staging Odoo is configured. Single-instance repos skip this.
+    if: ${{ needs.config.outputs.has_staging == 'true' && (github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'run-integration')) }}
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -177,8 +205,9 @@ jobs:
   deploy-staging:
     name: Deploy to Staging
     runs-on: ubuntu-latest
-    needs: [build, integration-tests, e2e-tests]
-    if: github.ref == 'refs/heads/main'
+    needs: [config, build, integration-tests, e2e-tests]
+    # Only deploys when a staging Odoo is configured. Single-instance repos skip this.
+    if: ${{ needs.config.outputs.has_staging == 'true' && github.ref == 'refs/heads/main' }}
     environment: staging
 
     steps:

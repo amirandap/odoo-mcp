@@ -158,16 +158,22 @@ class TestSignToolConfig:
 class TestSignToolRegistration:
     """Tests for sign tool registration in the tools module."""
 
-    def test_sign_tools_in_register_tools(self):
-        """Sign tools should appear in register_tools() output."""
-        all_tools = register_tools()
+    def test_sign_tools_in_register_tools_when_group_enabled(self):
+        """Sign tools should appear in register_tools() when the 'sign' group is enabled."""
+        all_tools = register_tools(("crud", "employee", "sign"))
         all_tool_names = [t.name for t in all_tools]
         for tool_name in SIGN_TOOL_NAMES:
             assert tool_name in all_tool_names, f"Sign tool {tool_name} not in register_tools()"
 
+    def test_sign_tools_excluded_by_default(self):
+        """Sign tools must NOT appear in the default register_tools() output."""
+        default_names = {t.name for t in register_tools()}
+        for tool_name in SIGN_TOOL_NAMES:
+            assert tool_name not in default_names
+
     def test_sign_tools_in_register_employee_tools(self):
-        """Sign tools should appear in register_employee_tools() output."""
-        employee_tools = register_employee_tools()
+        """Sign tools should appear in register_employee_tools() when 'sign' is enabled."""
+        employee_tools = register_employee_tools(("employee", "sign"))
         employee_tool_names = [t.name for t in employee_tools]
         for tool_name in SIGN_TOOL_NAMES:
             assert tool_name in employee_tool_names, f"Sign tool {tool_name} not in register_employee_tools()"

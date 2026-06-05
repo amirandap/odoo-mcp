@@ -204,3 +204,51 @@ class TestDevelopmentSettings:
 
         settings = Settings()
         assert settings.yolo_mode == "read"
+
+
+class TestReadOnlyScopes:
+    """Tests for the read-only scope derivation."""
+
+    def test_read_only_scopes_excludes_writes(self):
+        """read_only_scopes() must exclude every write-bearing scope."""
+        from odoo_mcp_server.config import (
+            OAUTH_SCOPES,
+            WRITE_SCOPES,
+            read_only_scopes,
+        )
+
+        ro = set(read_only_scopes())
+        assert ro.isdisjoint(WRITE_SCOPES)
+        assert "odoo.read" in ro
+        assert ro == set(OAUTH_SCOPES) - WRITE_SCOPES
+
+
+class TestToolGroupSettings:
+    """Tests for ENABLED_TOOL_GROUPS / effective_tool_groups."""
+
+    def test_effective_tool_groups_default(self, monkeypatch):
+        """Default exposes crud + employee, no sign."""
+        monkeypatch.delenv("ENABLED_TOOL_GROUPS", raising=False)
+        monkeypatch.delenv("SIGN_MODULE_ENABLED", raising=False)
+
+        from odoo_mcp_server.config import Settings
+
+        assert Settings().effective_tool_groups == {"crud", "employee"}
+
+    def test_effective_tool_groups_crud_only(self, monkeypatch):
+        """ENABLED_TOOL_GROUPS can restrict to a single group."""
+        monkeypatch.setenv("ENABLED_TOOL_GROUPS", "crud")
+        monkeypatch.delenv("SIGN_MODULE_ENABLED", raising=False)
+
+        from odoo_mcp_server.config import Settings
+
+        assert Settings().effective_tool_groups == {"crud"}
+
+    def test_effective_tool_groups_adds_sign_when_enabled(self, monkeypatch):
+        """sign_module_enabled adds 'sign' to the effective groups."""
+        monkeypatch.setenv("ENABLED_TOOL_GROUPS", "employee")
+        monkeypatch.setenv("SIGN_MODULE_ENABLED", "true")
+
+        from odoo_mcp_server.config import Settings
+
+        assert Settings().effective_tool_groups == {"employee", "sign"}

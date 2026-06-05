@@ -364,14 +364,50 @@ class TestEmployeeFieldSecurity:
         assert "Contracts" in DMS_ALLOWED_FOLDERS
         assert "Identity" in DMS_ALLOWED_FOLDERS
 
-    def test_register_tools_excludes_sign_when_disabled(self):
-        """Sign tools must be hidden unless the OCA sign module is enabled."""
+    def test_register_tools_excludes_sign_by_default(self):
+        """Sign tools must be hidden unless the 'sign' group is enabled."""
         from odoo_mcp_server.tools import SIGN_TOOLS, register_tools
 
         sign_names = {t.name for t in SIGN_TOOLS}
 
-        without_sign = {t.name for t in register_tools(include_sign=False)}
-        with_sign = {t.name for t in register_tools(include_sign=True)}
+        default = {t.name for t in register_tools()}
+        with_sign = {t.name for t in register_tools(("crud", "employee", "sign"))}
 
-        assert not (sign_names & without_sign)
+        assert not (sign_names & default)
         assert sign_names <= with_sign
+
+    def test_register_tools_crud_only(self):
+        """Selecting only the crud group exposes exactly the CRUD tools."""
+        from odoo_mcp_server.tools import (
+            CRUD_TOOLS,
+            EMPLOYEE_TOOLS,
+            register_tools,
+        )
+
+        crud_names = {t.name for t in CRUD_TOOLS}
+        employee_names = {t.name for t in EMPLOYEE_TOOLS}
+
+        selected = {t.name for t in register_tools(("crud",))}
+        assert selected == crud_names
+        assert not (selected & employee_names)
+
+    def test_register_tools_employee_only(self):
+        """Selecting only the employee group hides the CRUD tools."""
+        from odoo_mcp_server.tools import (
+            CRUD_TOOLS,
+            EMPLOYEE_TOOLS,
+            register_tools,
+        )
+
+        selected = {t.name for t in register_tools(("employee",))}
+        assert selected == {t.name for t in EMPLOYEE_TOOLS}
+        assert not (selected & {t.name for t in CRUD_TOOLS})
+
+    def test_tool_group_for(self):
+        """tool_group_for maps tool names to their group."""
+        from odoo_mcp_server.tools import tool_group_for
+
+        assert tool_group_for("search_records") == "crud"
+        assert tool_group_for("get_my_profile") == "employee"
+        assert tool_group_for("list_sign_templates") == "sign"
+        assert tool_group_for("does_not_exist") is None

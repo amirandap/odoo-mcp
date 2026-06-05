@@ -106,6 +106,25 @@ To prevent automerge, add the `no-automerge` label to your PR.
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `GCP_REGION` | Cloud Run / Vertex region | `europe-west1` |
+| `REQUIRE_STAGING` | Set to `true` if this repo runs a staging environment. Makes a missing `STAGING_ODOO_URL` fail CI. | unset (single-instance) |
+
+### Single instance vs. two environments (staging)
+
+A `config` job resolves whether a staging Odoo is configured (`STAGING_ODOO_URL`
+secret present) and the `integration-tests`, `e2e-tests`, and `deploy-staging` jobs
+gate on it. This makes CI behave correctly for both deployment shapes:
+
+- **Single instance (no staging) — CI stays green.** Leave `STAGING_ODOO_URL` and
+  `REQUIRE_STAGING` unset. The staging jobs **skip** (they need a staging Odoo to run
+  against); `lint`, `unit-tests`, `security`, and `build` still run. This is the
+  expected, healthy state for a one-Odoo deployment.
+- **Two environments — CI runs the staging jobs.** Set the `STAGING_ODOO_URL` secret
+  (plus the related Odoo/OAuth secrets below) and the integration/e2e/deploy jobs run
+  on `main`.
+- **Two environments, misconfigured — CI goes red (by design).** If you set the
+  `REQUIRE_STAGING=true` variable to declare that this repo *should* have staging but
+  the `STAGING_ODOO_URL` secret is missing, the `config` job **fails loudly**. This
+  red is the intended signal of a misconfiguration, not a broken pipeline.
 
 ### GitHub Secrets
 

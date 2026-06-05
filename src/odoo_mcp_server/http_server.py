@@ -26,7 +26,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from starlette.responses import StreamingResponse
 
-from .config import OAUTH_SCOPES, TOOL_SCOPE_REQUIREMENTS, Settings, check_scope_access
+from .config import OAUTH_SCOPES, TOOL_SCOPE_REQUIREMENTS, Settings, check_scope_access, read_only_scopes
 from .oauth.resource_server import (
     OAuthResourceServer,
     extract_user_context,
@@ -34,7 +34,7 @@ from .oauth.resource_server import (
 from .oauth.user_mapping import EmployeeNotFoundError, get_employee_for_user
 from .odoo.client import OdooClient
 from .resources import read_resource, register_resources
-from .tools import execute_tool, register_tools
+from .tools import execute_tool, register_tools, tool_group_for
 from .tools.employee import EMPLOYEE_TOOLS, execute_employee_tool
 from .tools.employee import configure as configure_employee_tools
 from .tools.sign import SIGN_TOOLS, execute_sign_tool
@@ -351,12 +351,18 @@ async def oauth_middleware(request: Request, call_next):
     if is_test_mode:
         import os
         dev_email = os.getenv("TEST_USER_EMAIL") or "dev@example.com"
-        logger.info("OAuth dev mode: using configured test email")
+        # YOLO_MODE=read grants a read-only scope set; dev mode and YOLO_MODE=true grant all.
+        if settings.yolo_mode == "read":
+            scopes = read_only_scopes()
+            logger.info("OAuth dev mode (read-only): using configured test email")
+        else:
+            scopes = list(OAUTH_SCOPES.keys())
+            logger.info("OAuth dev mode: using configured test email")
         request.state.user = {
             "sub": "dev-user",
             "email": dev_email,
             "employee_id": None,
-            "scopes": list(OAUTH_SCOPES.keys()),
+            "scopes": scopes,
             "claims": {},
         }
         return await call_next(request)
@@ -893,7 +899,7 @@ async def mcp_endpoint(request: Request, mcp_request: MCPRequest):
 
 async def handle_tools_list(user: dict) -> dict:
     """Handle tools/list MCP method."""
-    all_tools = register_tools(include_sign=settings.sign_module_enabled)
+    all_tools = register_tools(settings.effective_tool_groups)
     user_scopes = user.get("scopes", [])
 
     # Filter tools based on user's scopes
@@ -938,18 +944,21 @@ async def handle_tools_call(params: dict, user: dict) -> dict:
     if not odoo_client:
         raise HTTPException(status_code=503, detail="Odoo client not initialized")
 
+    # Reject tools whose group is not enabled on this deployment.
+    group = tool_group_for(tool_name)
+    if group is not None and group not in settings.effective_tool_groups:
+        detail = (
+            "Sign module is not enabled on this server"
+            if group == "sign"
+            else f"Tool group '{group}' is not enabled on this server"
+        )
+        raise HTTPException(status_code=404, detail=detail)
+
     # Check if this is an employee self-service tool or sign tool
     employee_tool_names = [t.name for t in EMPLOYEE_TOOLS]
     sign_tool_names = [t.name for t in SIGN_TOOLS]
     is_employee_tool = tool_name in employee_tool_names
     is_sign_tool = tool_name in sign_tool_names
-
-    # Sign tools require the optional OCA sign_oca addon (SIGN_MODULE_ENABLED).
-    if is_sign_tool and not settings.sign_module_enabled:
-        raise HTTPException(
-            status_code=404,
-            detail="Sign module is not enabled on this server",
-        )
 
     try:
         if is_employee_tool or is_sign_tool:

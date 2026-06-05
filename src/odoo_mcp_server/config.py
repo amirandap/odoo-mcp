@@ -38,6 +38,22 @@ OAUTH_SCOPES = {
     "odoo.sign.write": "Send and cancel signature requests",
 }
 
+# Write-bearing scopes. Used to derive a read-only scope set (see read_only_scopes).
+WRITE_SCOPES = {
+    "odoo.write",
+    "odoo.hr.profile.write",
+    "odoo.leave.write",
+    "odoo.leave.approve",
+    "odoo.documents.write",
+    "odoo.sign.write",
+}
+
+
+def read_only_scopes() -> list[str]:
+    """All defined scopes minus the write-bearing ones (for read-only deployments)."""
+    return [scope for scope in OAUTH_SCOPES if scope not in WRITE_SCOPES]
+
+
 # Scope requirements for each tool
 TOOL_SCOPE_REQUIREMENTS = {
     # Profile tools (Employee Self-Service)
@@ -179,6 +195,11 @@ class Settings(BaseSettings):
     dms_allowed_folders: str = "Contracts,Identity"
     dms_restricted_folders: str = "Background Checks,Offboarding Documents"
 
+    # Tool groups to expose, comma-separated. Available: "crud", "employee".
+    # ("sign" is controlled by sign_module_enabled, but may also be listed here.)
+    # Examples: "crud" for a generic admin bridge, "employee" for self-service only.
+    enabled_tool_groups: str = "crud,employee"
+
     # OCA Sign module (sign_oca). Disabled by default because it requires the
     # community `sign_oca` addon (sign.oca.* models). Enable to expose the sign tools.
     sign_module_enabled: bool = False
@@ -206,6 +227,14 @@ class Settings(BaseSettings):
     def is_google_oauth(self) -> bool:
         """Check if using Google OAuth."""
         return self.oauth_provider.lower() == "google"
+
+    @property
+    def effective_tool_groups(self) -> set[str]:
+        """Tool groups to expose: configured groups plus 'sign' when the module is enabled."""
+        groups = {g.strip().lower() for g in self.enabled_tool_groups.split(",") if g.strip()}
+        if self.sign_module_enabled:
+            groups.add("sign")
+        return groups
 
     @property
     def dms_allowed_folders_list(self) -> list[str]:

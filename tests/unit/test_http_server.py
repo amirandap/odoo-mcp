@@ -849,3 +849,75 @@ class TestMCPProtocolCompliance:
             json={"jsonrpc": "2.0", "method": "ping", "id": 42},
         )
         assert response.json()["id"] == 42
+
+
+class TestToolGroupAndReadOnlyModes:
+    """Versatility: tool-group selection and read-only YOLO mode over HTTP."""
+
+    def _client(self, monkeypatch, **env):
+        import importlib
+
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("ODOO_URL", "http://localhost:8069")
+        monkeypatch.setenv("ODOO_DB", "test_db")
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+
+        import odoo_mcp_server.http_server as http_server_module
+
+        importlib.reload(http_server_module)
+        return TestClient(http_server_module.app)
+
+    def _tool_names(self, client):
+        response = client.post(
+            "/mcp",
+            headers={"Authorization": "Bearer test_token"},
+            json={"jsonrpc": "2.0", "method": "tools/list", "id": 1},
+        )
+        assert response.status_code == 200
+        return {t["name"] for t in response.json()["result"]["tools"]}
+
+    def test_crud_only_group(self, monkeypatch):
+        """ENABLED_TOOL_GROUPS=crud exposes CRUD tools but not employee tools."""
+        client = self._client(monkeypatch, OAUTH_DEV_MODE="true", ENABLED_TOOL_GROUPS="crud")
+        names = self._tool_names(client)
+        assert "search_records" in names
+        assert "get_my_profile" not in names
+
+    def test_employee_only_group_hides_crud(self, monkeypatch):
+        """ENABLED_TOOL_GROUPS=employee hides CRUD tools, and calling one 404s."""
+        client = self._client(monkeypatch, OAUTH_DEV_MODE="true", ENABLED_TOOL_GROUPS="employee")
+        names = self._tool_names(client)
+        assert "get_my_profile" in names
+        assert "search_records" not in names
+
+        response = client.post(
+            "/mcp",
+            headers={"Authorization": "Bearer test_token"},
+            json={
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "params": {"name": "search_records", "arguments": {}},
+                "id": 1,
+            },
+        )
+        body = response.json()
+        assert "error" in body
+
+    def test_yolo_read_mode_hides_write_tools(self, monkeypatch):
+        """YOLO_MODE=read grants read-only scopes, so write tools are not listed."""
+        client = self._client(monkeypatch, YOLO_MODE="read")
+        names = self._tool_names(client)
+        assert "search_records" in names
+        assert "get_my_profile" in names
+        # Write tools require write scopes that read-only mode does not grant.
+        assert "create_record" not in names
+        assert "request_leave" not in names
+        assert "update_my_contact" not in names
+
+    def test_yolo_full_mode_includes_write_tools(self, monkeypatch):
+        """YOLO_MODE=true keeps full scopes including write tools."""
+        client = self._client(monkeypatch, YOLO_MODE="true")
+        names = self._tool_names(client)
+        assert "create_record" in names
