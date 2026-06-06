@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo noupdate="1">
+    <!-- Category to group MCP-related access rights in the UI. -->
+    <record id="module_category_mcp" model="ir.module.category">
+        <field name="name">MCP</field>
+        <field name="description">Model Context Protocol integration.</field>
+    </record>
+
+    <!-- Least-privilege group allowed to mint/revoke per-user API keys.
+         The MCP service account is the only member; system admins are NOT implicit
+         members (assign this group explicitly if a human needs it). xml_id:
+         mcp_apikey_provisioning.group_mcp_provisioning -->
+    <record id="group_mcp_provisioning" model="res.groups">
+        <field name="name">MCP API Key Provisioning</field>
+        <field name="category_id" ref="module_category_mcp"/>
+    </record>
+</odoo>
