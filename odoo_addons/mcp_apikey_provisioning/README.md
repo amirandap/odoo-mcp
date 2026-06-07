@@ -30,8 +30,14 @@ This addon adds one admin-guarded method to close that gap.
   (xml_id `mcp_apikey_provisioning.group_mcp_provisioning`), **not** `base.group_system`.
   System admins are **not** implicit members — assign the group explicitly.
 - The MCP service account must be a member of that group (and an internal user).
+- **Anti-privilege-escalation:** minting is **refused** for the superuser and for any
+  target in an elevated group (`base.group_system`, `base.group_erp_manager`). A
+  compromised service-account key therefore cannot mint an administrator's credentials.
+- Target must be an **internal** user (not portal/share).
+- Minted keys are **`rpc`-scoped** and time-limited: TTL defaults to **30 days** and is
+  **hard-capped at 90 days** server-side (`MAX_KEY_TTL_DAYS`), regardless of the requested
+  value.
 - Methods return only freshly generated keys; they never disclose existing keys.
-- Minted keys are `rpc`-scoped and time-limited (`ttl_days`, default 30).
 
 ## Install
 
