@@ -33,14 +33,25 @@ dev = [
     "respx>=0.22.0",
     "ruff>=0.8.0",
     "mypy>=1.13.0",
+    "cryptography>=43.0.0",  # Fernet for the per-user key vault (bridge tests)
+]
+# Per-user identity bridge (FastMCP + Google OAuth + per-user Odoo key vault).
+bridge = [
+    "fastmcp>=3.2,<4",
+    "cryptography>=43.0.0",
+]
+# Optional GCP Secret Manager backend for the bridge key vault.
+bridge-gcp = [
+    "google-cloud-secret-manager>=2.20.0",
 ]
 
 [project.scripts]
 odoo-mcp-server = "odoo_mcp_server.server:main"
 odoo-mcp-http = "odoo_mcp_server.http_server:main"
+odoo-mcp-bridge = "odoo_mcp_bridge.__main__:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/odoo_mcp_server"]
+packages = ["src/odoo_mcp_server", "src/odoo_mcp_bridge"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -65,6 +76,10 @@ line-length = 140
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Odoo addon __init__.py files import submodules for their registration side effects.
+"odoo_addons/**/__init__.py" = ["F401"]
 
 [tool.mypy]
 python_version = "3.12"
