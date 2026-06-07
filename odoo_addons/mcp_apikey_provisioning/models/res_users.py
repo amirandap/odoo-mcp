@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timedelta
 
-from odoo import _, api, fields, models
+from odoo import SUPERUSER_ID, _, api, fields, models
 from odoo.exceptions import AccessError, UserError
 
 _logger = logging.getLogger(__name__)
@@ -10,11 +10,17 @@ _logger = logging.getLogger(__name__)
 # so they can be listed/revoked/rotated as a group.
 MCP_KEY_NAME_PREFIX = "mcp:"
 
-# Default lifetime for a minted key when the caller does not specify one.
+# Default and hard-maximum lifetime for a minted key. The TTL is capped server-side so a
+# misconfigured (or compromised) caller cannot request a long-lived key.
 DEFAULT_KEY_TTL_DAYS = 30
+MAX_KEY_TTL_DAYS = 90
 
 # Least-privilege group gating the provisioning methods (NOT base.group_system).
 PROVISIONING_GROUP = "mcp_apikey_provisioning.group_mcp_provisioning"
+
+# Groups whose members must NEVER be minted a key (anti-privilege-escalation): a
+# compromised service-account key must not be able to mint an admin's credentials.
+ELEVATED_GROUPS = ("base.group_system", "base.group_erp_manager")
 
 
 class ResUsers(models.Model):
@@ -24,15 +30,16 @@ class ResUsers(models.Model):
     def mcp_mint_apikey(self, user_id, name=None, ttl_days=None):
         """Mint a fresh `rpc`-scoped API key for ``user_id`` and return it once.
 
-        Intended to be called over RPC by the MCP server authenticated as a
-        system administrator. The key lets the MCP server act as the target
+        Intended to be called over RPC by the MCP server, authenticated as a member of
+        the MCP API Key Provisioning group. The key lets the MCP server act as the target
         user for subsequent calls (native ACLs + correct create_uid).
 
         :param int user_id: target res.users id to mint the key for.
         :param str name: optional label; always stored with the ``mcp:`` prefix.
-        :param int ttl_days: optional key lifetime in days (default 30).
+        :param int ttl_days: optional key lifetime in days (default 30, capped at 90).
         :returns: the freshly generated API key string (shown only once).
-        :raises AccessError: if the caller is not a system administrator.
+        :raises AccessError: if the caller lacks the provisioning group, or the target is
+            the superuser / an elevated (admin) user.
         :raises UserError: if the target user is missing or not an internal user.
         """
         # --- authorization: only members of the dedicated provisioning group ---
@@ -46,11 +53,20 @@ class ResUsers(models.Model):
             # Portal/public users cannot use rpc-scoped keys meaningfully.
             raise UserError(_("Target user %s is not an internal user.") % user_id)
 
+        # Anti-privilege-escalation: never mint for the superuser or any elevated/admin
+        # target. This bounds the blast radius if the service-account key is compromised.
+        if target.id == SUPERUSER_ID or any(target.has_group(g) for g in ELEVATED_GROUPS):
+            raise AccessError(
+                _("Refusing to mint an API key for an administrator/elevated user (%s).") % target.login
+            )
+
         label = name or "per-user key"
         if not label.startswith(MCP_KEY_NAME_PREFIX):
             label = f"{MCP_KEY_NAME_PREFIX}{label}"
 
+        # Clamp the lifetime to [1, MAX_KEY_TTL_DAYS]; keys are always short-lived.
         days = int(ttl_days) if ttl_days else DEFAULT_KEY_TTL_DAYS
+        days = max(1, min(days, MAX_KEY_TTL_DAYS))
         expiration = fields.Datetime.to_string(datetime.utcnow() + timedelta(days=days))
 
         # Generate as the target user via the documented low-level helper. Running

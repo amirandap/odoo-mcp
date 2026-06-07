@@ -1,6 +1,6 @@
 {
     "name": "MCP API Key Provisioning",
-    "version": "18.0.1.1.0",
+    "version": "18.0.1.2.0",
     "summary": "Admin-only minting of per-user API keys for the Odoo MCP server (per-user identity mode).",
     "description": """
 Companion addon for the Odoo MCP server's per-user identity mode.
