@@ -18,6 +18,7 @@ Adapted from plane-mcp-bridge's auth.py (which uses user-pasted PATs; here we au
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from collections.abc import Callable
@@ -33,6 +34,12 @@ from .vault import Vault
 logger = logging.getLogger("odoo_mcp_bridge.auth")
 
 _KEY_CACHE_TTL_SECONDS = 300
+# Cache the upstream Google token validation briefly. Without this, every MCP request
+# (initialize, tools/list, each tools/call) re-hits Google tokeninfo+userinfo, adding two
+# round-trips per request and causing latency/rate-limit churn that surfaces as the
+# connector "dropping out mid-request". 60s is short enough that a revoked token stops
+# working quickly.
+_VALIDATION_CACHE_TTL_SECONDS = 60
 
 
 class OdooVaultGoogleProvider(GoogleProvider):
@@ -52,6 +59,7 @@ class OdooVaultGoogleProvider(GoogleProvider):
         self._is_email_allowed = is_email_allowed
         self._admin_client = build_admin_client(config)
         self._key_cache: dict[str, tuple[str | None, float]] = {}
+        self._validation_cache: dict[str, tuple[AccessToken | None, float]] = {}
         # Proactively re-mint once a stored key has used ~80% of its TTL, so the bridge
         # never serves a key that Odoo is about to expire (floor of 60s for tiny TTLs).
         self._rotate_after = max(60.0, config.key_ttl_days * 86400 * 0.8)
@@ -85,8 +93,23 @@ class OdooVaultGoogleProvider(GoogleProvider):
         except Exception:  # noqa: BLE001 - best effort
             pass
 
-    async def verify_token(self, token: str) -> AccessToken | None:
+    async def _verify_google_token(self, token: str) -> AccessToken | None:
+        """Validate the Google token, caching the result briefly to avoid re-hitting
+        Google's tokeninfo/userinfo on every MCP request."""
+        th = hashlib.sha256(token.encode()).hexdigest()
+        now = time.time()
+        cached = self._validation_cache.get(th)
+        if cached and cached[1] > now:
+            return cached[0]
         verified = await super().verify_token(token)
+        # Prune expired entries opportunistically to bound growth.
+        if len(self._validation_cache) > 2000:
+            self._validation_cache = {k: v for k, v in self._validation_cache.items() if v[1] > now}
+        self._validation_cache[th] = (verified, now + _VALIDATION_CACHE_TTL_SECONDS)
+        return verified
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        verified = await self._verify_google_token(token)
         if verified is None:
             return None
 
@@ -94,6 +117,10 @@ class OdooVaultGoogleProvider(GoogleProvider):
         if not email:
             logger.warning("Authenticated token has no email claim; rejecting")
             return None
+
+        # Fold secondary sign-in addresses into the canonical Odoo login (alias map),
+        # so one person can sign in with multiple emails but act as one Odoo user.
+        email = self._config.canonical_email(email)
 
         # Defense in depth: enforce the allowlist at the token boundary too.
         if self._is_email_allowed is not None and not self._is_email_allowed(email):

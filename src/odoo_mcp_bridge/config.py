@@ -8,6 +8,7 @@ admin/service account used to mint per-user keys, and the existing
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -27,6 +28,25 @@ def _require(name: str) -> str:
 
 def _split_csv(value: str) -> list[str]:
     return [item.strip().lower() for item in value.split(",") if item.strip()]
+
+
+def _parse_aliases(value: str) -> dict[str, str]:
+    """Parse BRIDGE_EMAIL_ALIASES. Accepts JSON ({"alias":"canonical"}) or a comma list
+    of alias=canonical pairs. Emails are lowercased."""
+    value = (value or "").strip()
+    if not value:
+        return {}
+    try:
+        data = json.loads(value)
+        return {str(k).strip().lower(): str(v).strip().lower() for k, v in data.items()}
+    except (json.JSONDecodeError, AttributeError):
+        out: dict[str, str] = {}
+        for pair in value.split(","):
+            if "=" in pair:
+                a, c = pair.split("=", 1)
+                if a.strip() and c.strip():
+                    out[a.strip().lower()] = c.strip().lower()
+        return out
 
 
 @dataclass(frozen=True)
@@ -49,6 +69,10 @@ class BridgeConfig:
     allowed_emails: list[str]
     allowed_domains: list[str]
 
+    # Optional email aliases: map secondary Google sign-in emails to a canonical login,
+    # so one person can sign in with several addresses but act as one Odoo user.
+    email_aliases: dict[str, str]
+
     # Per-user key vault.
     storage_backend: str  # "memory" | "encrypted_file" | "gcp_secret_manager"
     token_encryption_key: str | None
@@ -62,6 +86,11 @@ class BridgeConfig:
     @property
     def odoo_base(self) -> str:
         return self.odoo_url.rstrip("/")
+
+    def canonical_email(self, email: str) -> str:
+        """Map a sign-in email to its canonical login via the alias map (no-op if unmapped)."""
+        e = (email or "").strip().lower()
+        return self.email_aliases.get(e, e)
 
     @property
     def allow_all_emails(self) -> bool:
@@ -119,6 +148,7 @@ def load_config() -> BridgeConfig:
         session_secret=_require("SESSION_SECRET"),
         allowed_emails=allowed_emails,
         allowed_domains=allowed_domains,
+        email_aliases=_parse_aliases(os.environ.get("BRIDGE_EMAIL_ALIASES", "")),
         storage_backend=backend,
         token_encryption_key=enc_key,
         token_store_path=os.environ.get("TOKEN_STORE_PATH", "/tmp/odoo-mcp-keys.json"),  # nosec B108
