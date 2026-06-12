@@ -40,9 +40,16 @@ bridge = [
     "fastmcp>=3.2,<4",
     "cryptography>=43.0.0",
 ]
-# Optional GCP Secret Manager backend for the bridge key vault.
+# Optional GCP backends for the bridge: Secret Manager (per-user key vault) +
+# Firestore-backed OAuth-proxy client/token storage (persistent + shared across Cloud Run
+# instances — see src/odoo_mcp_bridge/oauth_storage.py).
 bridge-gcp = [
     "google-cloud-secret-manager>=2.20.0",
+    "py-key-value-aio[firestore]>=0.2.0",
+]
+# Optional Redis backend for OAuth-proxy client/token storage (needs Memorystore + VPC).
+bridge-redis = [
+    "py-key-value-aio[redis]>=0.2.0",
 ]
 
 [project.scripts]

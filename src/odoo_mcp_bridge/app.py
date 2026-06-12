@@ -31,6 +31,11 @@ logger = logging.getLogger("odoo_mcp_bridge")
 
 def build_mcp(config: BridgeConfig, vault: Vault) -> FastMCP:
     """Construct the FastMCP server with Google OAuth + per-user Odoo key vault."""
+    from .oauth_storage import build_client_storage
+
+    # Shared, persistent OAuth-proxy state (registered clients + refresh tokens). None =>
+    # FastMCP's default local disk, which is ephemeral/per-instance on Cloud Run. See
+    # oauth_storage.py — set OAUTH_CLIENT_STORAGE=firestore for a multi-instance deployment.
     auth = OdooVaultGoogleProvider(
         vault=vault,
         config=config,
@@ -40,6 +45,7 @@ def build_mcp(config: BridgeConfig, vault: Vault) -> FastMCP:
         base_url=config.bridge_public_url,
         redirect_path="/auth/callback",
         required_scopes=["openid", "email"],
+        client_storage=build_client_storage(config),
     )
     mcp = FastMCP(
         "Odoo (per-user)",

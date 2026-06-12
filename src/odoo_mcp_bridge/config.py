@@ -83,6 +83,14 @@ class BridgeConfig:
     host: str
     port: int
 
+    # OAuth-proxy client/token persistence. FastMCP's OAuthProxy defaults to LOCAL DISK,
+    # which is ephemeral + per-instance on Cloud Run — so registered clients and refresh
+    # tokens are lost on restart/redeploy/scale (forcing users to re-authenticate). Set a
+    # shared backend so OAuth state survives. "" = default disk (single-instance/local only).
+    oauth_client_storage: str  # "" | "firestore" | "redis"
+    oauth_client_storage_collection: str  # firestore collection / redis key prefix
+    oauth_client_storage_redis_url: str | None
+
     @property
     def odoo_base(self) -> str:
         return self.odoo_url.rstrip("/")
@@ -156,4 +164,7 @@ def load_config() -> BridgeConfig:
         key_ttl_days=int(os.environ.get("ODOO_KEY_TTL_DAYS", "30")),
         host=os.environ.get("BRIDGE_HOST", "0.0.0.0"),  # nosec B104
         port=port,
+        oauth_client_storage=os.environ.get("OAUTH_CLIENT_STORAGE", "").strip().lower(),
+        oauth_client_storage_collection=os.environ.get("OAUTH_CLIENT_STORAGE_COLLECTION", "oauth-proxy-state"),
+        oauth_client_storage_redis_url=os.environ.get("OAUTH_CLIENT_STORAGE_REDIS_URL") or None,
     )
