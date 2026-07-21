@@ -222,15 +222,35 @@ class TestSignToolOAuthScopes:
         assert "odoo.sign.read" not in context["scopes"]
 
     def test_internal_domain_user_gets_sign_write_scope(self):
-        """extract_user_context should grant odoo.sign.write for internal domain users."""
+        """
+        Security fix: internal_email_domain alone no longer grants
+        odoo.sign.write (or any write scope) - that domain-based auto-grant
+        was the vulnerability being closed (see test_crud_admin_allowlist.py).
+        Sign-write access for admins now comes via odoo.write, granted only
+        to emails on the explicit crud_admin_emails allowlist; check_scope_access
+        treats odoo.write as an accepted alternative to odoo.sign.write for
+        the sign tools (see TOOL_SCOPE_REQUIREMENTS in config.py).
+        """
         claims = {
             "iss": "https://accounts.google.com",
             "sub": "123456",
             "email": "employee@example.com",
             "email_verified": True,
         }
+
+        # Domain match alone grants nothing beyond the self-service read scope
         context = extract_user_context(claims, internal_email_domain="example.com")
-        assert "odoo.sign.write" in context["scopes"]
+        assert "odoo.sign.write" not in context["scopes"]
+        assert "odoo.sign.read" in context["scopes"]
+
+        # Being on the explicit allowlist grants odoo.write, which unlocks
+        # sign-write tools via check_scope_access's OR-match
+        context = extract_user_context(
+            claims,
+            internal_email_domain="example.com",
+            crud_admin_emails={"employee@example.com"},
+        )
+        assert "odoo.write" in context["scopes"]
         assert "odoo.sign.read" in context["scopes"]
 
     def test_external_user_does_not_get_sign_write_scope(self):

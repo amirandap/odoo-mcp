@@ -13,7 +13,12 @@ pytestmark = [pytest.mark.unit, pytest.mark.oauth]
 def test_google_token_with_standard_scopes_grants_default_odoo_scopes():
     """
     Test that a Google token with 'openid email profile' scopes still gets
-    default Odoo scopes (odoo.read, etc.) if email is verified.
+    default employee self-service Odoo scopes if email is verified.
+
+    Note: "odoo.read" is intentionally NOT part of the automatic defaults
+    (security fix - see extract_user_context()'s docstring: it grants
+    unfiltered CRUD access to every Odoo model and is now gated behind the
+    explicit crud_admin_emails allowlist, see test_crud_admin_allowlist.py).
     """
     # Simulate a Google Access Token claims
     claims = {
@@ -33,10 +38,12 @@ def test_google_token_with_standard_scopes_grants_default_odoo_scopes():
     assert "email" in scopes
     assert "profile" in scopes
 
-    # Verify Odoo default scopes are ADDED
-    assert "odoo.read" in scopes
+    # Verify Odoo default employee self-service scopes are ADDED
     assert "odoo.hr.profile" in scopes
     assert "odoo.leave.read" in scopes
+
+    # odoo.read is no longer auto-granted - requires crud_admin_emails
+    assert "odoo.read" not in scopes
 
 def test_google_token_with_custom_odoo_scopes_does_not_add_defaults():
     """
@@ -84,8 +91,10 @@ def test_non_google_token_also_gets_defaults_after_generalization():
     scopes = context["scopes"]
 
     assert "openid" in scopes
-    assert "odoo.read" in scopes
     assert "odoo.hr.profile" in scopes
+
+    # odoo.read is no longer auto-granted - requires crud_admin_emails
+    assert "odoo.read" not in scopes
 
 
 def test_custom_provider_token_with_verified_email_grants_default_scopes():
@@ -93,6 +102,11 @@ def test_custom_provider_token_with_verified_email_grants_default_scopes():
     A token from a private, self-hosted OIDC provider (e.g. Pocket ID) with
     a verified email and no explicit odoo.* scopes should still be granted
     the default employee self-service scopes, just like Google tokens are.
+
+    Note: "odoo.read" is intentionally NOT among those defaults (security fix,
+    see test_crud_admin_allowlist.py) - Pocket ID lets any employee with a
+    passkey authenticate, so auto-granting odoo.read would give every
+    employee unfiltered CRUD read access to the whole Odoo database.
     """
     claims = {
         "iss": "https://id.example-internal.com",
@@ -105,9 +119,9 @@ def test_custom_provider_token_with_verified_email_grants_default_scopes():
     context = extract_user_context(claims)
     scopes = context["scopes"]
 
-    assert "odoo.read" in scopes
     assert "odoo.hr.profile" in scopes
     assert "odoo.leave.read" in scopes
+    assert "odoo.read" not in scopes
 
 
 def test_custom_provider_token_without_email_verified_gets_no_defaults():
@@ -131,7 +145,11 @@ def test_custom_provider_token_without_email_verified_gets_no_defaults():
 
 def test_google_internal_user_gets_write_access():
     """
-    Test that internal users (@example.com) get write access.
+    Security fix: internal_email_domain alone must NO LONGER grant write
+    access - that was the vulnerability (any employee matching the domain
+    got unfiltered odoo.write to the whole database). Full CRUD access now
+    requires the user's email to be explicitly on crud_admin_emails.
+    See test_crud_admin_allowlist.py for the full allowlist test suite.
     """
     claims = {
         "iss": "https://accounts.google.com",
@@ -141,18 +159,27 @@ def test_google_internal_user_gets_write_access():
         "scope": "openid email profile",
     }
 
+    # internal_email_domain alone (no crud_admin_emails) grants nothing extra
     context = extract_user_context(claims, internal_email_domain="example.com")
     scopes = context["scopes"]
+    assert "odoo.write" not in scopes
+    assert "odoo.read" not in scopes
 
+    # Being on the explicit allowlist is what grants full CRUD access
+    context = extract_user_context(
+        claims,
+        internal_email_domain="example.com",
+        crud_admin_emails={"dev@example.com"},
+    )
+    scopes = context["scopes"]
     assert "odoo.write" in scopes
-    assert "odoo.documents.write" in scopes
-    assert "odoo.sign.write" in scopes
     assert "odoo.read" in scopes
 
 
 def test_google_external_user_no_write_scopes():
     """
-    Test that external users do not get write scopes even when internal_email_domain is set.
+    Test that external users do not get write (or read) CRUD scopes even
+    when internal_email_domain is set and they are not on crud_admin_emails.
     """
     claims = {
         "iss": "https://accounts.google.com",
@@ -162,14 +189,18 @@ def test_google_external_user_no_write_scopes():
         "scope": "openid email profile",
     }
 
-    context = extract_user_context(claims, internal_email_domain="example.com")
+    context = extract_user_context(
+        claims,
+        internal_email_domain="example.com",
+        crud_admin_emails={"dev@example.com"},
+    )
     scopes = context["scopes"]
 
     assert "odoo.write" not in scopes
     assert "odoo.documents.write" not in scopes
     assert "odoo.sign.write" not in scopes
-    # But they should still get read scopes
-    assert "odoo.read" in scopes
+    assert "odoo.read" not in scopes
+    # They should still get the employee self-service read scope
     assert "odoo.sign.read" in scopes
 
 def test_google_token_without_email_verified_gets_no_defaults():

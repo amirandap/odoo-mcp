@@ -183,6 +183,13 @@ class Settings(BaseSettings):
     # Internal domain for granting extended scopes (e.g. "example.com")
     internal_email_domain: str | None = None
 
+    # Explicit allowlist (comma-separated emails) of users who get full CRUD access
+    # (odoo.read + odoo.write on ANY model). Everyone else who authenticates only
+    # gets the employee self-service scopes (safe by design — auto-scoped to their
+    # own hr.employee record). This is a deliberate manual allowlist, NOT automatic
+    # by email domain or OAuth group membership.
+    crud_admin_emails: str = ""
+
     # --- Optional per-instance feature configuration (defaults = stock Odoo) ---
     # Extra hr.employee fields surfaced on the self profile.
     # JSON mapping of output key -> Odoo field name, e.g.
@@ -235,6 +242,11 @@ class Settings(BaseSettings):
         if self.sign_module_enabled:
             groups.add("sign")
         return groups
+
+    @property
+    def crud_admin_emails_set(self) -> set[str]:
+        """Emails with full CRUD (odoo.read/odoo.write) access, parsed from the comma-separated setting."""
+        return {e.strip().lower() for e in self.crud_admin_emails.split(",") if e.strip()}
 
     @property
     def dms_allowed_folders_list(self) -> list[str]:

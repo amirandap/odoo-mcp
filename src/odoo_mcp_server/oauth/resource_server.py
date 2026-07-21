@@ -22,14 +22,20 @@ logger = logging.getLogger(__name__)
 def extract_user_context(
     claims: dict[str, Any],
     internal_email_domain: str | None = None,
+    crud_admin_emails: set[str] | None = None,
 ) -> dict[str, Any]:
     """
     Extract user context from validated token claims.
 
     Args:
         claims: Decoded JWT claims
-        internal_email_domain: Domain suffix for internal users (e.g. "example.com")
-            who get extended write scopes. Set via INTERNAL_EMAIL_DOMAIN env var.
+        internal_email_domain: Kept for backward compatibility with existing
+            callers. No longer used to grant odoo.write (see security note
+            below) - retained only so it can still be passed without raising.
+        crud_admin_emails: Explicit, manually maintained allowlist (lowercased
+            emails) of users who get full CRUD access (odoo.read + odoo.write
+            on ANY model). Set via CRUD_ADMIN_EMAILS env var
+            (Settings.crud_admin_emails_set).
 
     Returns:
         User context dictionary with:
@@ -40,8 +46,23 @@ def extract_user_context(
 
     Note:
         Many OIDC providers' ID tokens don't include a 'scope' claim (Google's
-        included). For any provider, we grant default scopes based on email
-        verification and domain when no explicit odoo.* scopes are present.
+        included). For any provider, we grant default employee self-service
+        scopes based on email verification when no explicit odoo.* scopes are
+        present. Those defaults are safe to auto-grant to any authenticated
+        user because every employee tool self-limits to the caller's own
+        hr.employee record (see oauth/user_mapping.py).
+
+        "odoo.read" and "odoo.write" are NOT part of those defaults: they
+        grant full, unfiltered CRUD access to every Odoo model via the
+        generic tools (search_records, get_record, create_record,
+        update_record, delete_record, count_records), which have no
+        "only your own records" filtering. Previously "odoo.read" was granted
+        to any verified user and "odoo.write" to anyone whose email matched
+        internal_email_domain - in a deployment where any employee can
+        authenticate via the OIDC provider (e.g. Pocket ID with passkeys),
+        that meant any employee could read/write the entire Odoo database
+        through the shared service-account connection. Both scopes are now
+        gated behind the explicit crud_admin_emails allowlist instead.
     """
     # Extract scopes (space-separated string to list)
     scope_string = claims.get("scope", "")
@@ -62,7 +83,11 @@ def extract_user_context(
         email_verified = claims.get("email_verified", False)
 
         if email_verified and email:
-            # Grant default employee self-service scopes for verified Google users
+            # Grant default employee self-service scopes for any verified user.
+            # Safe to auto-grant: every employee tool self-limits to the
+            # caller's own hr.employee record. Deliberately does NOT include
+            # odoo.read/odoo.write - those grant full, unfiltered CRUD access
+            # to every Odoo model and are gated behind crud_admin_emails below.
             default_scopes = [
                 "odoo.hr.profile",
                 "odoo.hr.team",
@@ -71,7 +96,6 @@ def extract_user_context(
                 "odoo.leave.write",
                 "odoo.documents.read",
                 "odoo.sign.read",
-                "odoo.read",
             ]
 
             # Add to existing scopes (preserving openid, etc.)
@@ -79,19 +103,17 @@ def extract_user_context(
                 if scope not in scopes:
                     scopes.append(scope)
 
-            logger.info("Google OAuth: granted default scopes for verified user")
+            logger.info("OAuth: granted default employee self-service scopes for verified user")
 
-            # Grant additional scopes for internal domain users
-            if internal_email_domain and email.endswith(f"@{internal_email_domain}"):
-                admin_scopes = [
-                    "odoo.documents.write",
-                    "odoo.sign.write",
-                    "odoo.write",
-                ]
-                for scope in admin_scopes:
+            # Grant full CRUD access (odoo.read + odoo.write) only to emails on
+            # the explicit, manually maintained allowlist. This is deliberately
+            # NOT automatic by email domain or OAuth group membership - see the
+            # security note in this function's docstring.
+            if crud_admin_emails and email.lower() in crud_admin_emails:
+                for scope in ("odoo.read", "odoo.write"):
                     if scope not in scopes:
                         scopes.append(scope)
-                logger.info("Google OAuth: granted extended scopes for internal domain user")
+                logger.info("OAuth: granted full CRUD scopes to allowlisted admin user")
 
     return {
         "sub": claims.get("sub"),
