@@ -39,22 +39,25 @@ def extract_user_context(
         - sub: Subject identifier
 
     Note:
-        Google ID tokens don't include a 'scope' claim. For Google OAuth,
-        we grant default scopes based on email verification and domain.
+        Many OIDC providers' ID tokens don't include a 'scope' claim (Google's
+        included). For any provider, we grant default scopes based on email
+        verification and domain when no explicit odoo.* scopes are present.
     """
     # Extract scopes (space-separated string to list)
     scope_string = claims.get("scope", "")
     scopes = scope_string.split() if scope_string else []
 
-    # Check if this is a Google token
-    iss = claims.get("iss", "")
-    is_google = iss == "https://accounts.google.com" or iss == "accounts.google.com"
-
-    # For Google OAuth tokens, if Odoo scopes are missing, grant default scopes
-    # This handles both ID tokens (no scope claim) and Access tokens (standard scopes only)
+    # For any OAuth provider (Google or a custom OIDC provider, e.g. a private
+    # self-hosted IdP), if Odoo scopes are missing, grant default scopes.
+    # This handles both ID tokens (no scope claim) and Access tokens (standard
+    # scopes only). By the time claims reach this function they have already
+    # been validated (signature/issuer/audience) by TokenValidator against
+    # whichever issuer this deployment is configured for, so a verified email
+    # from that issuer is itself the trust signal - regardless of which
+    # provider it is.
     has_odoo_scopes = any(s.startswith("odoo.") for s in scopes)
 
-    if is_google and not has_odoo_scopes:
+    if not has_odoo_scopes:
         email = claims.get("email", "")
         email_verified = claims.get("email_verified", False)
 

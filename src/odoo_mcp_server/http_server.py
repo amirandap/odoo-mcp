@@ -477,7 +477,7 @@ async def oauth_authorize(
         "response_type": response_type,
         "client_id": settings.oauth_client_id,
         "redirect_uri": server_callback,
-        "scope": "openid email profile",
+        "scope": settings.oauth_scopes,
         "state": state,
         "access_type": "offline",
         "prompt": "consent",
@@ -492,7 +492,7 @@ async def oauth_authorize(
     logger.info("OAuth authorize: state=%s client_redirect=%s", state[:8], client_redirect[:50])
 
     return RedirectResponse(
-        url=f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}",
+        url=f"{settings.oauth_authorization_endpoint}?{urlencode(params)}",
         status_code=302,
     )
 
@@ -573,21 +573,22 @@ async def oauth_token(request: Request):
             },
         )
 
-    # Exchange with Google's token endpoint
+    # Exchange with the configured OAuth provider's token endpoint (Google by default,
+    # or a custom OIDC provider when OAUTH_PROVIDER=custom).
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            "https://oauth2.googleapis.com/token",
+            settings.oauth_token_endpoint,
             data=token_data,
         )
 
     result = response.json()
     if response.status_code != 200:
         logger.error(
-            "Google token exchange FAILED: status=%s grant_type=%s error=%s",
+            "Token exchange FAILED: status=%s grant_type=%s error=%s",
             response.status_code, grant_type, result.get("error_description", result.get("error", "unknown")),
         )
     else:
-        logger.info("Google token exchange OK: grant_type=%s has_refresh=%s", grant_type, "refresh_token" in result)
+        logger.info("Token exchange OK: grant_type=%s has_refresh=%s", grant_type, "refresh_token" in result)
 
     return JSONResponse(
         status_code=response.status_code,
