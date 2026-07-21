@@ -587,6 +587,147 @@ class TestOAuthProxyCallback:
         assert "Missing authorization code" in response.text
 
 
+class TestCustomOAuthProxy:
+    """Tests for OAUTH_PROVIDER=custom support in /authorize and /token.
+
+    Today these endpoints hardcode Google's URLs as string literals, ignoring
+    the oauth_authorization_endpoint / oauth_token_endpoint / oauth_scopes
+    settings that already exist in config.py. These tests pin the expected
+    behavior: when OAUTH_PROVIDER=custom, the proxy must use the configured
+    custom IdP endpoints instead of Google's.
+    """
+
+    @pytest.fixture
+    def custom_client(self, monkeypatch):
+        """Create test client configured for a custom OIDC provider."""
+        import importlib
+
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("ODOO_URL", "http://localhost:8069")
+        monkeypatch.setenv("ODOO_DB", "test_db")
+        monkeypatch.setenv("OAUTH_DEV_MODE", "true")
+        monkeypatch.setenv("OAUTH_PROVIDER", "custom")
+        monkeypatch.setenv("OAUTH_AUTHORIZATION_ENDPOINT", "https://auth.example.com/authorize")
+        monkeypatch.setenv("OAUTH_TOKEN_ENDPOINT", "https://auth.example.com/oauth/token")
+        monkeypatch.setenv("OAUTH_JWKS_URI", "https://auth.example.com/jwks")
+        monkeypatch.setenv("OAUTH_ISSUER", "https://auth.example.com")
+        monkeypatch.setenv("OAUTH_SCOPES", "openid profile odoo.read")
+        monkeypatch.setenv("OAUTH_REDIRECT_URI", "https://mcp-server.example.com/callback")
+        monkeypatch.setenv("OAUTH_RESOURCE_IDENTIFIER", "https://mcp-server.example.com")
+        monkeypatch.setenv("OAUTH_CLIENT_ID", "test-client-id")
+        monkeypatch.setenv("OAUTH_CLIENT_SECRET", "test-secret")
+
+        import odoo_mcp_server.http_server as http_server_module
+
+        importlib.reload(http_server_module)
+        return TestClient(http_server_module.app)
+
+    @pytest.fixture
+    def google_client(self, monkeypatch):
+        """Create test client with OAUTH_PROVIDER left at its 'google' default."""
+        import importlib
+
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("ODOO_URL", "http://localhost:8069")
+        monkeypatch.setenv("ODOO_DB", "test_db")
+        monkeypatch.setenv("OAUTH_DEV_MODE", "true")
+        monkeypatch.delenv("OAUTH_PROVIDER", raising=False)
+        monkeypatch.setenv("OAUTH_REDIRECT_URI", "https://mcp-server.example.com/callback")
+        monkeypatch.setenv("OAUTH_RESOURCE_IDENTIFIER", "https://mcp-server.example.com")
+        monkeypatch.setenv("OAUTH_CLIENT_ID", "test-client-id")
+        monkeypatch.setenv("OAUTH_CLIENT_SECRET", "test-secret")
+
+        import odoo_mcp_server.http_server as http_server_module
+
+        importlib.reload(http_server_module)
+        return TestClient(http_server_module.app)
+
+    def test_authorize_redirects_to_custom_provider_when_configured(self, custom_client):
+        """GET /authorize with OAUTH_PROVIDER=custom should redirect to the custom IdP, not Google."""
+        response = custom_client.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "some-mcp-client",
+                "redirect_uri": "http://127.0.0.1:12345/callback",
+                "scope": "openid",
+                "state": "custom-state-123",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 302
+        location = response.headers["location"]
+        assert location.startswith("https://auth.example.com/authorize")
+        assert "accounts.google.com" not in location
+        assert "scope=openid+profile+odoo.read" in location
+
+    def test_authorize_redirects_to_google_by_default(self, google_client):
+        """Regression: GET /authorize with no OAUTH_PROVIDER (default) must still hit Google."""
+        response = google_client.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "some-mcp-client",
+                "redirect_uri": "http://127.0.0.1:12345/callback",
+                "scope": "openid",
+                "state": "google-state-123",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 302
+        location = response.headers["location"]
+        assert location.startswith("https://accounts.google.com/o/oauth2/v2/auth")
+        assert "auth.example.com" not in location
+
+    def test_token_posts_to_custom_endpoint_when_configured(self, custom_client, monkeypatch):
+        """POST /token with OAUTH_PROVIDER=custom should exchange the code with the custom IdP."""
+        import httpx
+
+        calls = []
+
+        async def fake_post(self, url, data=None, **kwargs):
+            calls.append(url)
+            return httpx.Response(200, json={"access_token": "tok", "token_type": "Bearer"})
+
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+        response = custom_client.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": "some-code",
+                "redirect_uri": "http://127.0.0.1:12345/callback",
+            },
+        )
+        assert response.status_code == 200
+        assert calls == ["https://auth.example.com/oauth/token"]
+
+    def test_token_posts_to_google_endpoint_by_default(self, google_client, monkeypatch):
+        """Regression: POST /token with no OAUTH_PROVIDER (default) must still hit Google."""
+        import httpx
+
+        calls = []
+
+        async def fake_post(self, url, data=None, **kwargs):
+            calls.append(url)
+            return httpx.Response(200, json={"access_token": "tok", "token_type": "Bearer"})
+
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+        response = google_client.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": "some-code",
+                "redirect_uri": "http://127.0.0.1:12345/callback",
+            },
+        )
+        assert response.status_code == 200
+        assert calls == ["https://oauth2.googleapis.com/token"]
+
+
 class TestRefreshTokenGrant:
     """Tests for refresh_token grant type."""
 

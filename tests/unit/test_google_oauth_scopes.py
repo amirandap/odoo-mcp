@@ -60,9 +60,17 @@ def test_google_token_with_custom_odoo_scopes_does_not_add_defaults():
     # Defaults should NOT be added because has_odoo_scopes is True
     assert "odoo.read" not in scopes
 
-def test_non_google_token_does_not_get_defaults():
+def test_non_google_token_also_gets_defaults_after_generalization():
     """
-    Test that a non-Google token does not get default scopes automatically.
+    extract_user_context() no longer special-cases Google: any verified,
+    scope-less token (any `iss`) gets the default Odoo scopes.
+
+    This intentionally supersedes the old Google-only behavior. In a custom
+    OAUTH_PROVIDER=custom deployment (e.g. a private self-hosted IdP like
+    Pocket ID), the token has already been validated by TokenValidator
+    against the deployment's configured issuer/jwks/audience before it
+    reaches this function - successfully authenticating with that private
+    IdP is itself the trust signal, exactly as it is today for Google.
     """
     claims = {
         "iss": "https://other-issuer.com",
@@ -70,6 +78,49 @@ def test_non_google_token_does_not_get_defaults():
         "email": "test@example.com",
         "email_verified": True,
         "scope": "openid email",
+    }
+
+    context = extract_user_context(claims)
+    scopes = context["scopes"]
+
+    assert "openid" in scopes
+    assert "odoo.read" in scopes
+    assert "odoo.hr.profile" in scopes
+
+
+def test_custom_provider_token_with_verified_email_grants_default_scopes():
+    """
+    A token from a private, self-hosted OIDC provider (e.g. Pocket ID) with
+    a verified email and no explicit odoo.* scopes should still be granted
+    the default employee self-service scopes, just like Google tokens are.
+    """
+    claims = {
+        "iss": "https://id.example-internal.com",
+        "sub": "pocketid-user-1",
+        "email": "employee@example-internal.com",
+        "email_verified": True,
+        "scope": "openid profile email",
+    }
+
+    context = extract_user_context(claims)
+    scopes = context["scopes"]
+
+    assert "odoo.read" in scopes
+    assert "odoo.hr.profile" in scopes
+    assert "odoo.leave.read" in scopes
+
+
+def test_custom_provider_token_without_email_verified_gets_no_defaults():
+    """
+    Regression: an unverified email from a custom provider must not get
+    default scopes either - this check is provider-agnostic, not removed.
+    """
+    claims = {
+        "iss": "https://id.example-internal.com",
+        "sub": "pocketid-user-2",
+        "email": "employee@example-internal.com",
+        "email_verified": False,
+        "scope": "openid profile email",
     }
 
     context = extract_user_context(claims)
