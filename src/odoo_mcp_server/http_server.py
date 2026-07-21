@@ -389,6 +389,7 @@ async def oauth_middleware(request: Request, call_next):
             request.state.user = extract_user_context(
                 claims,
                 internal_email_domain=settings.internal_email_domain,
+                crud_admin_emails=settings.crud_admin_emails_set,
             )
             return await call_next(request)
         except Exception as e:
