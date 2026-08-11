@@ -163,6 +163,10 @@ class Settings(BaseSettings):
     oauth_token_endpoint: str = "https://oauth2.googleapis.com/token"
     oauth_jwks_uri: str = "https://www.googleapis.com/oauth2/v3/certs"
     oauth_issuer: str = "https://accounts.google.com"
+    # Optional: only needed for providers whose access tokens don't carry
+    # profile claims (email/email_verified) directly - the validator falls
+    # back to calling this endpoint to resolve identity when set.
+    oauth_userinfo_endpoint: str | None = None
 
     # Resource Server settings (REQUIRED - your deployment URL)
     oauth_resource_identifier: str | None = None

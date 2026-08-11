@@ -39,6 +39,7 @@ from .tools.employee import EMPLOYEE_TOOLS, execute_employee_tool
 from .tools.employee import configure as configure_employee_tools
 from .tools.sign import SIGN_TOOLS, execute_sign_tool
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -144,7 +145,7 @@ def _get_oauth_audience() -> str:
     For Google OAuth: audience is the client_id (Google ID tokens have aud=client_id)
     For custom OAuth: audience is the resource identifier
     """
-    if settings.is_google_oauth and settings.oauth_client_id:
+    if settings.oauth_client_id:
         return settings.oauth_client_id
     return settings.oauth_resource_identifier or ""
 
@@ -176,6 +177,8 @@ def _get_resource_server() -> OAuthResourceServer:
             audience=_get_oauth_audience(),
             scopes_supported=_get_advertised_scopes(),
             issuer=settings.effective_issuer,
+            jwks_uri=(None if settings.is_google_oauth else settings.oauth_jwks_uri),
+            userinfo_endpoint=settings.oauth_userinfo_endpoint,
         )
     return resource_server
 
@@ -204,6 +207,8 @@ async def lifespan(app: FastAPI):
         audience=_get_oauth_audience(),
         scopes_supported=_get_advertised_scopes(),
         issuer=settings.effective_issuer,
+        jwks_uri=(None if settings.is_google_oauth else settings.oauth_jwks_uri),
+        userinfo_endpoint=settings.oauth_userinfo_endpoint,
     )
 
     logger.info(f"OAuth provider: {settings.oauth_provider}")
