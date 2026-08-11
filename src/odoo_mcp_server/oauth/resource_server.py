@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -143,6 +144,8 @@ class OAuthResourceServer:
     audience: str
     scopes_supported: list[str] = field(default_factory=list)
     issuer: str | None = None
+    jwks_uri: str | None = None
+    userinfo_endpoint: str | None = None
 
     # Internal components
     _validator: TokenValidator | None = field(default=None, repr=False)
@@ -157,6 +160,7 @@ class OAuthResourceServer:
             self._validator = TokenValidator(
                 issuer=token_issuer,
                 audience=self.audience,
+                jwks_uri=self.jwks_uri,
             )
 
         self._metadata = ProtectedResourceMetadata(
@@ -185,7 +189,23 @@ class OAuthResourceServer:
 
     async def validate_token_async(self, token: str) -> dict[str, Any]:
         """Validate access token asynchronously."""
-        return await self.validator.validate_async(token)
+        claims = await self.validator.validate_async(token)
+        # Some OIDC providers (e.g. Pocket ID) issue access tokens that carry
+        # only sub/aud/exp - no profile claims. Fall back to /userinfo so
+        # extract_user_context() can still resolve email/email_verified.
+        if not claims.get("email") and self.userinfo_endpoint:
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(
+                        self.userinfo_endpoint,
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                    resp.raise_for_status()
+                    userinfo = resp.json()
+                claims = {**claims, **{k: v for k, v in userinfo.items() if v is not None}}
+            except Exception as e:
+                logger.warning(f"userinfo enrichment failed: {type(e).__name__}: {e}")
+        return claims
 
 
 class OAuthMiddleware(BaseHTTPMiddleware):
