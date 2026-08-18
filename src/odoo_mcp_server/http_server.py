@@ -78,13 +78,72 @@ AUTH_SESSION_TTL_SECONDS = 600  # 10 minutes
 _pending_auth_sessions: dict[str, dict] = {}
 
 
-def _store_auth_session(state: str, client_redirect_uri: str) -> None:
-    """Store a pending auth session keyed by state."""
+def _store_auth_session(state: str, client_redirect_uri: str, purpose: str = "mcp_client") -> None:
+    """Store a pending auth session keyed by state.
+
+    purpose="mcp_client" (default) is the existing OAuth-proxy flow: forward
+    the code to an MCP client's redirect_uri. purpose="link_odoo_account" is
+    the self-service credential flow: /callback exchanges the code itself
+    instead of forwarding it (see _handle_link_odoo_callback).
+    """
     _cleanup_expired_sessions()
     _pending_auth_sessions[state] = {
         "client_redirect_uri": client_redirect_uri,
+        "purpose": purpose,
         "created_at": time.time(),
     }
+
+
+# =============================================================================
+# Self-service "link my own Odoo account" flow
+# =============================================================================
+# Separate from the MCP-client OAuth proxy above: a user visits
+# /link-odoo-account, authenticates against the same IdP purely to prove their
+# email, then pastes their OWN Odoo login + API key. Stored in user_vault
+# (odoo/user_vault.py) so generic CRUD tools act as them - see
+# handle_tools_call in this module. Requires USER_KEY_VAULT_PATH/
+# USER_KEY_VAULT_ENCRYPTION_KEY (user_vault is None otherwise -> 404).
+
+LINK_SESSION_TTL_SECONDS = 600  # 10 minutes
+
+_pending_link_sessions: dict[str, dict] = {}
+
+
+def _store_link_session(email: str) -> str:
+    """Create a one-time link session for a verified email, return its token."""
+    link_token = str(uuid.uuid4())
+    _pending_link_sessions[link_token] = {"email": email, "created_at": time.time()}
+    return link_token
+
+
+def _peek_link_session(link_token: str) -> dict | None:
+    """Look up a link session WITHOUT consuming it (so a failed submit can retry)."""
+    session = _pending_link_sessions.get(link_token)
+    if session and (time.time() - session["created_at"]) < LINK_SESSION_TTL_SECONDS:
+        return session
+    return None
+
+
+def _render_link_form(link_token: str, existing_login: str | None, error: str | None = None) -> str:
+    error_html = f'<p style="color:#b00020">{html.escape(error)}</p>' if error else ""
+    login_value = html.escape(existing_login) if existing_login else ""
+    return f"""
+    <html>
+    <body style="font-family: sans-serif; max-width: 480px; margin: 40px auto;">
+    <h1>Link your Odoo account</h1>
+    <p>Paste your OWN Odoo login and API key (Odoo: your profile &gt; Account
+    Security &gt; New API Key). Odoo tools will then act as you, using your
+    own permissions.</p>
+    {error_html}
+    <form method="post" action="/link-odoo-account/submit">
+        <input type="hidden" name="link_token" value="{html.escape(link_token)}">
+        <label>Odoo login<br><input type="text" name="odoo_login" value="{login_value}" required></label><br><br>
+        <label>Odoo API key<br><input type="password" name="odoo_api_key" required></label><br><br>
+        <button type="submit">Link my account</button>
+    </form>
+    </body>
+    </html>
+    """
 
 
 def _get_auth_session(state: str) -> dict | None:
@@ -330,6 +389,8 @@ async def oauth_middleware(request: Request, call_next):
         "/authorize",
         "/token",
         "/register",
+        "/link-odoo-account",
+        "/link-odoo-account/submit",
     ]
 
     # Normalize path (handle trailing slashes)
@@ -441,6 +502,38 @@ async def oauth_protected_resource_metadata():
         raise HTTPException(status_code=503, detail="OAuth not configured")
 
     return rs.metadata.to_dict()
+
+
+@app.get("/link-odoo-account")
+@limiter.limit("10/minute")
+async def link_odoo_account_start(request: Request):
+    """Start the self-service 'link my own Odoo account' flow.
+
+    A dedicated OAuth round-trip against the same configured IdP, purely to
+    confirm the caller's verified email - separate from the MCP-client proxy
+    flow in /authorize. Reuses the server's own registered callback URL, so
+    no new redirect_uri needs to be added on the IdP side.
+    """
+    if user_vault is None:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    state = str(uuid.uuid4())
+    _store_auth_session(state=state, client_redirect_uri="", purpose="link_odoo_account")
+
+    server_callback = settings.oauth_redirect_uri or f"{settings.oauth_resource_identifier}/callback"
+    params = {
+        "response_type": "code",
+        "client_id": settings.oauth_client_id,
+        "redirect_uri": server_callback,
+        "scope": "openid email profile",
+        "state": state,
+    }
+    params = {k: v for k, v in params.items() if v is not None}
+
+    return RedirectResponse(
+        url=f"{settings.oauth_authorization_endpoint}?{urlencode(params)}",
+        status_code=302,
+    )
 
 
 @app.get("/authorize")
@@ -666,6 +759,104 @@ async def oauth_register(request: Request):
     return JSONResponse(status_code=201, content=response)
 
 
+async def _handle_link_odoo_callback(code: str) -> HTMLResponse:
+    """Finish the self-service link flow: exchange the code ourselves (it's
+    single-use and belongs to us, not an MCP client), resolve the caller's
+    verified email via the same validator used for real MCP requests, and
+    render the credential form."""
+    server_callback = settings.oauth_redirect_uri or f"{settings.oauth_resource_identifier}/callback"
+    token_data = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": server_callback,
+        "client_id": settings.oauth_client_id or "",
+        "client_secret": settings.oauth_client_secret or "",
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(settings.oauth_token_endpoint, data=token_data)
+
+    if response.status_code != 200:
+        logger.error("link-odoo-account: token exchange failed: %s", response.status_code)
+        return HTMLResponse(
+            content="<html><body><h1>Link failed</h1><p>Could not verify your login. Please try again.</p></body></html>",
+            status_code=400,
+        )
+
+    token = response.json().get("access_token")
+    if not token:
+        return HTMLResponse(
+            content="<html><body><h1>Link failed</h1><p>No access token returned.</p></body></html>",
+            status_code=400,
+        )
+
+    claims = await _get_resource_server().validate_token_async(token)
+    email = (claims.get("email") or "").strip().lower()
+    if not email or not claims.get("email_verified"):
+        return HTMLResponse(
+            content="<html><body><h1>Link failed</h1><p>We couldn't verify a confirmed email for your account.</p></body></html>",
+            status_code=400,
+        )
+
+    link_token = _store_link_session(email)
+    existing = user_vault.get_credentials(email) if user_vault else None
+    existing_login = existing[0] if existing else None
+
+    logger.info("link-odoo-account: verified identity, rendering credential form")
+    return HTMLResponse(content=_render_link_form(link_token, existing_login))
+
+
+@app.post("/link-odoo-account/submit")
+@limiter.limit("10/minute")
+async def link_odoo_account_submit(request: Request):
+    """Store the user's pasted Odoo login + API key, after test-authenticating
+    it against the real Odoo instance so a typo doesn't silently break their
+    access."""
+    if user_vault is None:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    form = await request.form()
+    link_token = str(form.get("link_token", ""))
+    odoo_login = str(form.get("odoo_login", "")).strip()
+    odoo_api_key = str(form.get("odoo_api_key", "")).strip()
+
+    session = _peek_link_session(link_token)
+    if not session:
+        return HTMLResponse(
+            content=(
+                "<html><body><h1>Session expired</h1>"
+                '<p>Please start again at <a href="/link-odoo-account">/link-odoo-account</a>.</p></body></html>'
+            ),
+            status_code=400,
+        )
+
+    if not odoo_login or not odoo_api_key:
+        return HTMLResponse(
+            content=_render_link_form(link_token, None, error="Please fill in both fields."),
+            status_code=400,
+        )
+
+    candidate = OdooClient(url=settings.odoo_url, db=settings.odoo_db, api_key=odoo_api_key, username=odoo_login)
+    try:
+        await candidate.authenticate()
+    except Exception as exc:  # noqa: BLE001 - surface a clear retry, not a 500
+        logger.warning("link-odoo-account: candidate credential rejected by Odoo: %s", type(exc).__name__)
+        return HTMLResponse(
+            content=_render_link_form(
+                link_token, odoo_login, error="Odoo rejected that login/API key. Check them and try again."
+            ),
+            status_code=400,
+        )
+
+    user_vault.put_credentials(session["email"], odoo_login, odoo_api_key)
+    _pending_link_sessions.pop(link_token, None)
+
+    logger.info("link-odoo-account: linked a personal Odoo credential")
+    return HTMLResponse(
+        content="<html><body><h1>Success</h1><p>Your Odoo account is linked. Odoo tools will now act as you.</p></body></html>"
+    )
+
+
 @app.get("/callback")
 async def oauth_callback(code: str | None = None, state: str | None = None, error: str | None = None):
     """
@@ -704,6 +895,9 @@ async def oauth_callback(code: str | None = None, state: str | None = None, erro
 
     # Look up the original client redirect URI
     session = _get_auth_session(state)
+
+    if session and session.get("purpose") == "link_odoo_account":
+        return await _handle_link_odoo_callback(code)
 
     if session:
         # Redirect to client's original redirect_uri with code and state
