@@ -1107,11 +1107,28 @@ async def handle_tools_list(user: dict) -> dict:
     all_tools = register_tools(settings.effective_tool_groups)
     user_scopes = user.get("scopes", [])
 
+    # A caller with their OWN Odoo credential on file (see odoo/user_vault.py)
+    # must see the generic CRUD tools even without odoo.read/odoo.write -
+    # they'll be able to call them (handle_tools_call applies the same
+    # bypass), so hiding them here would make the tools undiscoverable.
+    has_personal_credential = False
+    if user_vault is not None:
+        email = user.get("email")
+        has_personal_credential = bool(email and user_vault.get_credentials(email))
+
+    employee_tool_names = {t.name for t in EMPLOYEE_TOOLS}
+    sign_tool_names = {t.name for t in SIGN_TOOLS}
+
     # Filter tools based on user's scopes
     accessible_tools = []
     for tool in all_tools:
-        required_scopes = TOOL_SCOPE_REQUIREMENTS.get(tool.name, ["odoo.read"])
-        if check_scope_access(required_scopes, user_scopes):
+        is_crud_tool = tool.name not in employee_tool_names and tool.name not in sign_tool_names
+        if is_crud_tool and has_personal_credential:
+            accessible = True
+        else:
+            required_scopes = TOOL_SCOPE_REQUIREMENTS.get(tool.name, ["odoo.read"])
+            accessible = check_scope_access(required_scopes, user_scopes)
+        if accessible:
             accessible_tools.append({
                 "name": tool.name,
                 "description": tool.description,
