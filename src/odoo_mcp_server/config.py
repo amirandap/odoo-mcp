@@ -219,6 +219,15 @@ class Settings(BaseSettings):
     mcp_api_key: str | None = None  # Secret key loaded from GCP Secret Manager
     mcp_api_key_email: str | None = None  # Email identity for API key user
 
+    # Per-user Odoo credential override (see odoo/user_vault.py). When both are
+    # set, generic CRUD tools look up the caller's OWN (odoo_login, odoo_api_key)
+    # here by email; if found, Odoo authenticates as that user and its native
+    # permissions govern access, bypassing crud_admin_emails for that call.
+    # Populate via scripts/set_user_odoo_key.py. Unset by default - feature is
+    # fully opt-in and existing deployments are unaffected.
+    user_key_vault_path: str | None = None
+    user_key_vault_encryption_key: str | None = None
+
     # Development
     debug: bool = False
     oauth_dev_mode: bool = False  # Skip OAuth validation in dev

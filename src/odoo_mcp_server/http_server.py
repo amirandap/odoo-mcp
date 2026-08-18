@@ -33,6 +33,7 @@ from .oauth.resource_server import (
 )
 from .oauth.user_mapping import EmployeeNotFoundError, get_employee_for_user
 from .odoo.client import OdooClient
+from .odoo.user_vault import build_user_vault
 from .resources import read_resource, register_resources
 from .tools import execute_tool, register_tools, tool_group_for
 from .tools.employee import EMPLOYEE_TOOLS, execute_employee_tool
@@ -54,6 +55,9 @@ def _rate_limit_key(request: Request) -> str:
 # Global state
 settings = Settings()  # type: ignore[call-arg]  # pydantic-settings loads from env vars
 odoo_client: OdooClient | None = None
+# Per-user Odoo credential override (see odoo/user_vault.py). None unless both
+# USER_KEY_VAULT_PATH and USER_KEY_VAULT_ENCRYPTION_KEY are configured.
+user_vault = build_user_vault(settings)
 
 # Apply per-instance tool configuration (custom employee fields, DMS folder names).
 configure_employee_tools(
@@ -937,16 +941,44 @@ async def handle_tools_call(params: dict, user: dict) -> dict:
     if not tool_name:
         raise HTTPException(status_code=400, detail="Missing tool name")
 
-    # Check scope access
-    user_scopes = user.get("scopes", [])
-    required_scopes = TOOL_SCOPE_REQUIREMENTS.get(tool_name, ["odoo.read"])
+    # Check if this is an employee self-service tool or sign tool. Computed
+    # early because the personal-credential override below only applies to
+    # generic CRUD tools.
+    employee_tool_names = [t.name for t in EMPLOYEE_TOOLS]
+    sign_tool_names = [t.name for t in SIGN_TOOLS]
+    is_employee_tool = tool_name in employee_tool_names
+    is_sign_tool = tool_name in sign_tool_names
+    is_crud_tool = not is_employee_tool and not is_sign_tool
 
-    if not check_scope_access(required_scopes, user_scopes):
-        logger.warning(f"Insufficient scope for tool {tool_name}. Required: {required_scopes}, Granted: {user_scopes}")
-        raise HTTPException(
-            status_code=403,
-            detail=f"Insufficient scope for tool: {tool_name}",
-        )
+    # A caller with their OWN Odoo credential on file (see odoo/user_vault.py)
+    # acts as themselves on generic CRUD tools - Odoo's native permissions on
+    # THEIR account (ir.model.access, record rules) are the real gate, so the
+    # CRUD_ADMIN_EMAILS scope check below is bypassed for them. Everyone else
+    # (no vault configured, or no entry for this email) is unaffected.
+    personal_client: OdooClient | None = None
+    if is_crud_tool and user_vault is not None:
+        email = user.get("email")
+        credentials = user_vault.get_credentials(email) if email else None
+        if credentials:
+            odoo_login, odoo_api_key = credentials
+            personal_client = OdooClient(
+                url=settings.odoo_url,
+                db=settings.odoo_db,
+                api_key=odoo_api_key,
+                username=odoo_login,
+            )
+
+    if personal_client is None:
+        # Check scope access
+        user_scopes = user.get("scopes", [])
+        required_scopes = TOOL_SCOPE_REQUIREMENTS.get(tool_name, ["odoo.read"])
+
+        if not check_scope_access(required_scopes, user_scopes):
+            logger.warning(f"Insufficient scope for tool {tool_name}. Required: {required_scopes}, Granted: {user_scopes}")
+            raise HTTPException(
+                status_code=403,
+                detail=f"Insufficient scope for tool: {tool_name}",
+            )
 
     if not odoo_client:
         raise HTTPException(status_code=503, detail="Odoo client not initialized")
@@ -960,12 +992,6 @@ async def handle_tools_call(params: dict, user: dict) -> dict:
             else f"Tool group '{group}' is not enabled on this server"
         )
         raise HTTPException(status_code=404, detail=detail)
-
-    # Check if this is an employee self-service tool or sign tool
-    employee_tool_names = [t.name for t in EMPLOYEE_TOOLS]
-    sign_tool_names = [t.name for t in SIGN_TOOLS]
-    is_employee_tool = tool_name in employee_tool_names
-    is_sign_tool = tool_name in sign_tool_names
 
     try:
         if is_employee_tool or is_sign_tool:
@@ -1003,8 +1029,10 @@ async def handle_tools_call(params: dict, user: dict) -> dict:
                 # Execute employee tool with employee context
                 result = await execute_employee_tool(tool_name, arguments, odoo_client, employee_id)
         else:
-            # Execute generic tool (CRUD - only for admin users with odoo.write scope)
-            result = await execute_tool(tool_name, arguments, odoo_client)
+            # Execute generic tool (CRUD). Uses the caller's own Odoo
+            # credential when they have one on file (personal_client), else
+            # the shared service-account client gated by CRUD_ADMIN_EMAILS.
+            result = await execute_tool(tool_name, arguments, personal_client or odoo_client)
 
         return {
             "content": [{"type": "text", "text": r.text} for r in result],
