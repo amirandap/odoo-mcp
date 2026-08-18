@@ -21,6 +21,19 @@ services:
       retries: 3
       start_period: 10s
     restart: unless-stopped
+    # Only needed if USER_KEY_VAULT_PATH/USER_KEY_VAULT_ENCRYPTION_KEY are set
+    # (per-user Odoo credential vault, see odoo/user_vault.py). Mount a
+    # DIRECTORY, not a single file: without a volume the vault file only
+    # ever exists inside the container's own throwaway filesystem, so every
+    # rebuild silently wipes it. A single-file bind mount isn't enough
+    # either - Docker auto-creates the missing parent directory as root, so
+    # the app's non-root user can read the mounted file but can't create the
+    # temp file it needs for its atomic write (self-service linking fails
+    # with PermissionError even though reads work). Mounting the containing
+    # directory gives the app user write access to that directory too.
+    # volumes:
+    #   - ./vault_data:/opt/odoo-mcp/vault_data
+    # (and set USER_KEY_VAULT_PATH=/opt/odoo-mcp/vault_data/user_credentials.json)
 
   # For local development testing
   mock-auth-server:
