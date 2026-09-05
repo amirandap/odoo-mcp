@@ -200,12 +200,12 @@ class TestLinkOdooAccountSubmit:
 
         response = client.post(
             "/link-odoo-account/submit",
-            data={"link_token": link_token, "odoo_login": "alice@vivaldi.odoo", "odoo_api_key": "her-real-key"},
+            data={"link_token": link_token, "odoo_login": "alice@acme.odoo", "odoo_api_key": "her-real-key"},
         )
 
         assert response.status_code == 200
         assert "success" in response.text.lower() or "listo" in response.text.lower()
-        assert module.user_vault.get_credentials("alice@example.com") == ("alice@vivaldi.odoo", "her-real-key")
+        assert module.user_vault.get_credentials("alice@example.com") == ("alice@acme.odoo", "her-real-key")
         # Single-use: the link session is gone after success.
         assert link_token not in module._pending_link_sessions
 
@@ -222,7 +222,7 @@ class TestLinkOdooAccountSubmit:
 
         response = client.post(
             "/link-odoo-account/submit",
-            data={"link_token": link_token, "odoo_login": "alice@vivaldi.odoo", "odoo_api_key": "typo-key"},
+            data={"link_token": link_token, "odoo_login": "alice@acme.odoo", "odoo_api_key": "typo-key"},
         )
 
         assert response.status_code == 400
@@ -235,7 +235,7 @@ class TestLinkOdooAccountSubmit:
 
         response = client.post(
             "/link-odoo-account/submit",
-            data={"link_token": "does-not-exist", "odoo_login": "alice@vivaldi.odoo", "odoo_api_key": "k"},
+            data={"link_token": "does-not-exist", "odoo_login": "alice@acme.odoo", "odoo_api_key": "k"},
         )
 
         assert response.status_code == 400
@@ -247,7 +247,7 @@ class TestLinkOdooAccountSubmit:
 
         response = client.post(
             "/link-odoo-account/submit",
-            data={"link_token": link_token, "odoo_login": "alice@vivaldi.odoo", "odoo_api_key": "k"},
+            data={"link_token": link_token, "odoo_login": "alice@acme.odoo", "odoo_api_key": "k"},
         )
 
         assert response.status_code == 400
