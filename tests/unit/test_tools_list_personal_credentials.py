@@ -51,7 +51,7 @@ class TestToolsListWithoutVault:
         assert "get_my_profile" in names
 
     async def test_admin_allowlist_user_sees_crud_tools(self, http_server_module):
-        user = {"email": "admin@vivaldi.do", "scopes": ["odoo.read", "odoo.write"]}
+        user = {"email": "admin@acme.dev", "scopes": ["odoo.read", "odoo.write"]}
 
         result = await http_server_module.handle_tools_list(user)
 
