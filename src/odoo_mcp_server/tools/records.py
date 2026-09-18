@@ -9,6 +9,8 @@ from typing import Any
 from mcp.types import TextContent, Tool
 
 from ..odoo.client import OdooClient
+from ..odoo.domain_validation import extract_domain_fields
+from ..odoo.exceptions import OdooValidationError
 
 TOOLS = [
     Tool(
@@ -156,6 +158,26 @@ TOOLS = [
 ]
 
 
+async def _validate_domain(client: OdooClient, model: str, domain: list) -> None:
+    """Raise OdooValidationError if domain references a field the model
+    doesn't have, instead of letting Odoo fail deep inside XML-RPC with an
+    opaque traceback (e.g. filtering ``active`` on ``sale.order.line``,
+    which has no such field).
+    """
+    referenced = extract_domain_fields(domain)
+    if not referenced:
+        return
+
+    model_fields = await client.fields_get(model)
+    unknown = sorted(f for f in referenced if f != "id" and f not in model_fields)
+    if unknown:
+        raise OdooValidationError(
+            f"Unknown field(s) {unknown} in domain for model '{model}'. "
+            f"Valid fields: {sorted(model_fields)}",
+            field=unknown[0],
+        )
+
+
 async def execute_tool(
     name: str,
     arguments: dict[str, Any],
@@ -164,9 +186,11 @@ async def execute_tool(
     """Execute a tool and return results"""
 
     if name == "search_records":
+        domain = arguments.get("domain", [])
+        await _validate_domain(client, arguments["model"], domain)
         records = await client.search_read(
             model=arguments["model"],
-            domain=arguments.get("domain", []),
+            domain=domain,
             fields=arguments.get("fields"),
             limit=arguments.get("limit", 20),
             offset=arguments.get("offset", 0)
@@ -206,9 +230,11 @@ async def execute_tool(
         return [TextContent(type="text", text=json.dumps({"success": success}))]
 
     elif name == "count_records":
+        domain = arguments.get("domain", [])
+        await _validate_domain(client, arguments["model"], domain)
         count = await client.search_count(
             model=arguments["model"],
-            domain=arguments.get("domain", [])
+            domain=domain
         )
         return [TextContent(type="text", text=json.dumps({"count": count}))]
 
