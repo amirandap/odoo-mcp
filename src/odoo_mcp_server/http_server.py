@@ -1243,7 +1243,7 @@ async def handle_tools_call(params: dict, user: dict) -> dict:
             # Execute generic tool (CRUD). Uses the caller's own Odoo
             # credential when they have one on file (personal_client), else
             # the shared service-account client gated by CRUD_ADMIN_EMAILS.
-            result = await execute_tool(tool_name, arguments, personal_client or odoo_client)
+            result = await execute_tool(tool_name, arguments, personal_client or odoo_client, settings=settings)
 
         return {
             "content": [{"type": "text", "text": r.text} for r in result],
