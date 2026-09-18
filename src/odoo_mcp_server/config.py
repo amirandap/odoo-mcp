@@ -206,10 +206,21 @@ class Settings(BaseSettings):
     dms_allowed_folders: str = "Contracts,Identity"
     dms_restricted_folders: str = "Background Checks,Offboarding Documents"
 
-    # Tool groups to expose, comma-separated. Available: "crud", "employee".
+    # Tool groups to expose, comma-separated. Available: "crud", "employee", "reports".
     # ("sign" is controlled by sign_module_enabled, but may also be listed here.)
     # Examples: "crud" for a generic admin bridge, "employee" for self-service only.
     enabled_tool_groups: str = "crud,employee"
+
+    # Monthly consumption report (invoiced sales by client, for a single Odoo
+    # company). Opt-in and empty by default so a stock deployment exposes no
+    # "reports" tools. Each report "grupo" maps to a native Odoo
+    # res.partner.category tag (Contact Tags) - membership is managed in Odoo
+    # itself, not here. JSON object of grupo -> tag name, e.g.
+    #   CONSUMPTION_REPORT_GROUPS={"avendra": "Avendra - Reporte Consumo Vivaldi",
+    #     "quantum": "Quantum - Reporte Consumo Vivaldi"}
+    # Must also list "reports" in ENABLED_TOOL_GROUPS to expose the tool.
+    consumption_report_groups: dict[str, str] = {}
+    consumption_report_company_id: int = 1
 
     # OCA Sign module (sign_oca). Disabled by default because it requires the
     # community `sign_oca` addon (sign.oca.* models). Enable to expose the sign tools.

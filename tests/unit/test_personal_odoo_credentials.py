@@ -50,7 +50,7 @@ def vault(tmp_path, http_server_module):
 def _capture_execute_tool(monkeypatch, module):
     captured = {}
 
-    async def fake_execute_tool(name, arguments, client):
+    async def fake_execute_tool(name, arguments, client, **kwargs):
         captured["name"] = name
         captured["client"] = client
         return []
