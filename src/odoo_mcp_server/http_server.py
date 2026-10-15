@@ -26,6 +26,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from starlette.responses import StreamingResponse
 
+from .clickup import ClickUpClient, build_clickup_client
 from .config import OAUTH_SCOPES, TOOL_SCOPE_REQUIREMENTS, Settings, check_scope_access, read_only_scopes
 from .oauth.resource_server import (
     OAuthResourceServer,
@@ -36,6 +37,7 @@ from .odoo.client import OdooClient
 from .odoo.user_vault import build_user_vault
 from .resources import read_resource, register_resources
 from .tools import execute_tool, register_tools, tool_group_for
+from .tools.clickup import CLICKUP_TOOLS
 from .tools.employee import EMPLOYEE_TOOLS, execute_employee_tool
 from .tools.employee import configure as configure_employee_tools
 from .tools.sign import SIGN_TOOLS, execute_sign_tool
@@ -55,6 +57,7 @@ def _rate_limit_key(request: Request) -> str:
 # Global state
 settings = Settings()  # type: ignore[call-arg]  # pydantic-settings loads from env vars
 odoo_client: OdooClient | None = None
+clickup_client: ClickUpClient | None = None
 # Per-user Odoo credential override (see odoo/user_vault.py). None unless both
 # USER_KEY_VAULT_PATH and USER_KEY_VAULT_ENCRYPTION_KEY are configured.
 user_vault = build_user_vault(settings)
@@ -249,7 +252,7 @@ def _get_resource_server() -> OAuthResourceServer:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    global odoo_client, resource_server
+    global odoo_client, resource_server, clickup_client
 
     # Initialize Odoo client
     logger.info(f"Initializing Odoo client: {settings.odoo_url} (DB: {settings.odoo_db}, User: {settings.odoo_username or 'admin'})")
@@ -260,6 +263,12 @@ async def lifespan(app: FastAPI):
         username=settings.odoo_username,
         password=settings.odoo_password,
     )
+
+    # Optional ClickUp client ("clickup" tool group). Raises on bad config so the
+    # server fails fast at startup instead of on the first tool call.
+    clickup_client = build_clickup_client(settings)
+    if clickup_client is not None:
+        logger.info(f"ClickUp tools enabled: {len(clickup_client.config.accounts)} account(s)")
 
     # Initialize OAuth resource server
     # authorization_servers = our server (for MCP client discovery)
@@ -285,6 +294,8 @@ async def lifespan(app: FastAPI):
     # Cleanup
     if odoo_client:
         await odoo_client.close()
+    if clickup_client:
+        clickup_client.close()
 
 
 # Create FastAPI app
@@ -1116,13 +1127,14 @@ async def handle_tools_list(user: dict) -> dict:
         email = user.get("email")
         has_personal_credential = bool(email and user_vault.get_credentials(email))
 
-    employee_tool_names = {t.name for t in EMPLOYEE_TOOLS}
-    sign_tool_names = {t.name for t in SIGN_TOOLS}
+    # ClickUp tools are excluded from the personal-credential bypass: an Odoo key
+    # on file says nothing about ClickUp access, so they stay scope-gated.
+    non_crud_tool_names = {t.name for t in EMPLOYEE_TOOLS + SIGN_TOOLS + CLICKUP_TOOLS}
 
     # Filter tools based on user's scopes
     accessible_tools = []
     for tool in all_tools:
-        is_crud_tool = tool.name not in employee_tool_names and tool.name not in sign_tool_names
+        is_crud_tool = tool.name not in non_crud_tool_names
         if is_crud_tool and has_personal_credential:
             accessible = True
         else:
@@ -1159,7 +1171,8 @@ async def handle_tools_call(params: dict, user: dict) -> dict:
     sign_tool_names = [t.name for t in SIGN_TOOLS]
     is_employee_tool = tool_name in employee_tool_names
     is_sign_tool = tool_name in sign_tool_names
-    is_crud_tool = not is_employee_tool and not is_sign_tool
+    is_clickup_tool = tool_name in {t.name for t in CLICKUP_TOOLS}
+    is_crud_tool = not is_employee_tool and not is_sign_tool and not is_clickup_tool
 
     # A caller with their OWN Odoo credential on file (see odoo/user_vault.py)
     # acts as themselves on generic CRUD tools - Odoo's native permissions on
@@ -1243,7 +1256,13 @@ async def handle_tools_call(params: dict, user: dict) -> dict:
             # Execute generic tool (CRUD). Uses the caller's own Odoo
             # credential when they have one on file (personal_client), else
             # the shared service-account client gated by CRUD_ADMIN_EMAILS.
-            result = await execute_tool(tool_name, arguments, personal_client or odoo_client, settings=settings)
+            result = await execute_tool(
+                tool_name,
+                arguments,
+                personal_client or odoo_client,
+                settings=settings,
+                clickup_client=clickup_client,
+            )
 
         return {
             "content": [{"type": "text", "text": r.text} for r in result],
