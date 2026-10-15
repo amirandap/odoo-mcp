@@ -19,6 +19,7 @@ from mcp.types import (
     ToolsCapability,
 )
 
+from .clickup import ClickUpClient, build_clickup_client
 from .config import Settings
 from .odoo.client import OdooClient
 from .resources import register_resources
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 server = Server("odoo-mcp-server")
 settings = Settings()  # type: ignore[call-arg]  # pydantic-settings loads from env vars
 odoo_client: OdooClient | None = None
+clickup_client: ClickUpClient | None = None
 
 # Apply per-instance tool configuration (custom employee fields, DMS folder names).
 configure_employee_tools(
@@ -43,7 +45,7 @@ configure_employee_tools(
 @asynccontextmanager
 async def lifespan():
     """Manage server lifecycle"""
-    global odoo_client
+    global odoo_client, clickup_client
 
     odoo_client = OdooClient(
         url=settings.odoo_url,
@@ -52,11 +54,14 @@ async def lifespan():
         username=settings.odoo_username,
         password=settings.odoo_password
     )
+    clickup_client = build_clickup_client(settings)
 
     yield
 
     if odoo_client:
         await odoo_client.close()
+    if clickup_client:
+        clickup_client.close()
 
 
 @server.list_tools()
@@ -71,7 +76,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     from .tools import execute_tool
     if not odoo_client:
         raise RuntimeError("Odoo client not initialized")
-    return await execute_tool(name, arguments, odoo_client)
+    return await execute_tool(name, arguments, odoo_client, clickup_client=clickup_client)
 
 
 @server.list_resources()
