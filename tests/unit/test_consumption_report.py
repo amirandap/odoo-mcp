@@ -47,7 +47,7 @@ class TestBuildConsumptionDomain:
         from odoo_mcp_server.tools.consumption_report import build_consumption_domain
 
         domain = build_consumption_domain(
-            commercial_partner_id=8727,
+            commercial_partner_ids=[8727, 4521],
             inicio="2026-08-01",
             fin="2026-08-31",
             company_id=1,
@@ -57,7 +57,7 @@ class TestBuildConsumptionDomain:
         assert ["move_id.state", "=", "posted"] in domain
         assert ["move_id.invoice_date", ">=", "2026-08-01"] in domain
         assert ["move_id.invoice_date", "<=", "2026-08-31"] in domain
-        assert ["partner_id.commercial_partner_id", "=", 8727] in domain
+        assert ["partner_id.commercial_partner_id", "in", [8727, 4521]] in domain
         assert ["display_type", "=", "product"] in domain
         assert ["company_id", "=", 1] in domain
 
@@ -107,18 +107,28 @@ class TestGenerateConsumptionReportTool:
             "quantum": "Quantum - Reporte Consumo Vivaldi",
         }
 
-    def _client_with_tag_and_invoices(self, mock_odoo_client, partners, invoice_lines_by_partner):
+    def _client_with_tag_and_invoices(self, mock_odoo_client, partners, groups, commercial_of=None):
+        """groups: read_group rows as Odoo returns them, e.g.
+        {"partner_id": [8727, "X"], "__count": 2, "price_subtotal": 36108.0}.
+        commercial_of: partner id -> commercial partner id (default: itself)."""
+        commercial_of = commercial_of or {}
+
         async def fake_search_read(model, domain=None, fields=None, limit=None, order=None):
             if model == "res.partner.category":
                 return [{"id": 12}]
             if model == "res.partner":
                 return partners
-            if model == "account.move.line":
-                partner_id = next(v for f, op, v in domain if f == "partner_id.commercial_partner_id")
-                return invoice_lines_by_partner.get(partner_id, [])
-            raise AssertionError(f"unexpected model {model}")
+            raise AssertionError(f"unexpected search_read on {model}")
+
+        async def fake_read(model, ids, fields=None):
+            assert model == "res.partner"
+            return [
+                {"id": i, "commercial_partner_id": [commercial_of.get(i, i), "x"]} for i in ids
+            ]
 
         mock_odoo_client.search_read.side_effect = fake_search_read
+        mock_odoo_client.read.side_effect = fake_read
+        mock_odoo_client.read_group.return_value = groups
 
     @pytest.mark.asyncio
     async def test_reports_consumo_per_client_and_builds_xlsx(self, mock_odoo_client, report_groups):
@@ -131,10 +141,7 @@ class TestGenerateConsumptionReportTool:
         self._client_with_tag_and_invoices(
             mock_odoo_client,
             partners,
-            {
-                8727: [{"price_subtotal": 30600.0}, {"price_subtotal": 5508.0}],
-                4521: [],
-            },
+            [{"partner_id": [8727, "HAMACA"], "__count": 2, "price_subtotal": 36108.0}],
         )
 
         result = await execute_tool(
@@ -187,7 +194,7 @@ class TestGenerateConsumptionReportTool:
     async def test_single_configured_group_used_as_default(self, mock_odoo_client):
         from odoo_mcp_server.tools.consumption_report import execute_tool
 
-        self._client_with_tag_and_invoices(mock_odoo_client, [], {})
+        self._client_with_tag_and_invoices(mock_odoo_client, [], [])
 
         result = await execute_tool(
             "generate_consumption_report",
@@ -228,3 +235,70 @@ class TestGenerateConsumptionReportTool:
                 report_groups={},
                 company_id=1,
             )
+
+    @pytest.mark.asyncio
+    async def test_single_read_group_call_for_all_clients(self, mock_odoo_client, report_groups):
+        """N clients must cost ONE aggregate query, not N line-level searches."""
+        from odoo_mcp_server.tools.consumption_report import execute_tool
+
+        partners = [{"id": i, "name": f"H{i}", "vat": str(i)} for i in (1, 2, 3, 4, 5, 6)]
+        self._client_with_tag_and_invoices(mock_odoo_client, partners, [])
+
+        await execute_tool(
+            "generate_consumption_report",
+            {"periodo": "2026-08", "grupo": "avendra"},
+            mock_odoo_client,
+            report_groups=report_groups,
+            company_id=1,
+        )
+
+        assert mock_odoo_client.read_group.await_count == 1
+        domain = mock_odoo_client.read_group.await_args.kwargs["domain"]
+        assert ["partner_id.commercial_partner_id", "in", [1, 2, 3, 4, 5, 6]] in domain
+
+    @pytest.mark.asyncio
+    async def test_child_contact_lines_roll_up_to_commercial_partner(self, mock_odoo_client, report_groups):
+        """An invoice addressed to a child contact (e.g. delivery address)
+        must count toward its commercial partner's total."""
+        import json
+
+        from odoo_mcp_server.tools.consumption_report import execute_tool
+
+        partners = [{"id": 8727, "name": "HAMACA", "vat": "101172381"}]
+        self._client_with_tag_and_invoices(
+            mock_odoo_client,
+            partners,
+            [
+                {"partner_id": [8727, "HAMACA"], "__count": 1, "price_subtotal": 100.0},
+                {"partner_id": [9999, "HAMACA, Almacen"], "__count": 2, "price_subtotal": 50.0},
+            ],
+            commercial_of={9999: 8727},
+        )
+
+        result = await execute_tool(
+            "generate_consumption_report",
+            {"periodo": "2026-08", "grupo": "avendra"},
+            mock_odoo_client,
+            report_groups=report_groups,
+            company_id=1,
+        )
+
+        row = json.loads(result[0].text)["rows"][0]
+        assert row["consumoDop"] == pytest.approx(150.0)
+        assert row["facturas"] == 3
+
+    @pytest.mark.asyncio
+    async def test_no_partners_in_tag_skips_aggregate_query(self, mock_odoo_client, report_groups):
+        from odoo_mcp_server.tools.consumption_report import execute_tool
+
+        self._client_with_tag_and_invoices(mock_odoo_client, [], [])
+
+        await execute_tool(
+            "generate_consumption_report",
+            {"periodo": "2026-08", "grupo": "avendra"},
+            mock_odoo_client,
+            report_groups=report_groups,
+            company_id=1,
+        )
+
+        mock_odoo_client.read_group.assert_not_called()
