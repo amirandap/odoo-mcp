@@ -1288,6 +1288,17 @@ async def handle_resources_read(params: dict, user: dict) -> dict:
     }
 
 
+class HealthCheckLogFilter(logging.Filter):
+    """Drop the container healthcheck (GET /health every 30s) from the access log."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        return not (isinstance(args, tuple) and len(args) >= 3 and args[2] == "/health")
+
+
+logging.getLogger("uvicorn.access").addFilter(HealthCheckLogFilter())
+
+
 # =============================================================================
 # Main Entry Point
 # =============================================================================

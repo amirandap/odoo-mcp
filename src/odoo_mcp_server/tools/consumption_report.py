@@ -72,18 +72,18 @@ def period_bounds(periodo: str) -> tuple[str, str]:
 
 
 def build_consumption_domain(
-    commercial_partner_id: int,
+    commercial_partner_ids: list[int],
     inicio: str,
     fin: str,
     company_id: int,
 ) -> list:
-    """Domain for invoiced product lines of one client, in one company, in one period."""
+    """Domain for invoiced product lines of the given clients, in one company, in one period."""
     return [
         ["move_id.move_type", "=", "out_invoice"],
         ["move_id.state", "=", "posted"],
         ["move_id.invoice_date", ">=", inicio],
         ["move_id.invoice_date", "<=", fin],
-        ["partner_id.commercial_partner_id", "=", commercial_partner_id],
+        ["partner_id.commercial_partner_id", "in", commercial_partner_ids],
         ["display_type", "=", "product"],
         ["company_id", "=", company_id],
     ]
@@ -110,22 +110,49 @@ async def resolve_partners_by_tag(client: OdooClient, tag_name: str) -> list[dic
     )
 
 
-async def _consumo_for_client(
+async def _consumo_by_client(
     client: OdooClient,
-    commercial_partner_id: int,
+    partner_ids: list[int],
     inicio: str,
     fin: str,
     company_id: int,
-) -> tuple[float, int]:
-    domain = build_consumption_domain(commercial_partner_id, inicio, fin, company_id)
-    lines = await client.search_read(
+) -> dict[int, tuple[float, int]]:
+    """Return {commercial_partner_id: (total, line_count)} with a single aggregate query.
+
+    Lines are grouped by their own partner (which may be a child contact such as
+    a delivery address) and rolled up to the commercial partner afterwards, so
+    the numbers match what a per-client search on
+    ``partner_id.commercial_partner_id`` would give.
+    """
+    if not partner_ids:
+        return {}
+
+    groups = await client.read_group(
         model="account.move.line",
-        domain=domain,
-        fields=["price_subtotal"],
-        limit=10000,
+        domain=build_consumption_domain(partner_ids, inicio, fin, company_id),
+        fields=["price_subtotal:sum"],
+        groupby=["partner_id"],
     )
-    total = sum(line.get("price_subtotal") or 0 for line in lines)
-    return total, len(lines)
+    if not groups:
+        return {}
+
+    line_partner_ids = [g["partner_id"][0] for g in groups]
+    partners = await client.read(
+        model="res.partner",
+        ids=line_partner_ids,
+        fields=["commercial_partner_id"],
+    )
+    commercial_of = {p["id"]: p["commercial_partner_id"][0] for p in partners}
+
+    totals: dict[int, tuple[float, int]] = {}
+    for group in groups:
+        commercial_id = commercial_of[group["partner_id"][0]]
+        total, count = totals.get(commercial_id, (0.0, 0))
+        totals[commercial_id] = (
+            total + (group.get("price_subtotal") or 0),
+            count + group.get("__count", 0),
+        )
+    return totals
 
 
 def _build_xlsx_base64(rows: list[dict], periodo: str, grupo: str) -> str:
@@ -185,15 +212,17 @@ async def execute_tool(
     tag_name = report_groups[grupo]
     partners = await resolve_partners_by_tag(client, tag_name)
 
+    consumo = await _consumo_by_client(
+        client,
+        [partner["id"] for partner in partners],
+        inicio,
+        fin,
+        company_id,
+    )
+
     rows: list[dict[str, Any]] = []
     for partner in partners:
-        total, n = await _consumo_for_client(
-            client,
-            partner["id"],
-            inicio,
-            fin,
-            company_id,
-        )
+        total, n = consumo.get(partner["id"], (0.0, 0))
         rows.append(
             {
                 "cliente": partner.get("name"),

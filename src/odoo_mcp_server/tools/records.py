@@ -6,6 +6,7 @@ MCP tools for creating, reading, updating, and deleting Odoo records.
 import json
 from typing import Any
 
+from cachetools import TTLCache  # type: ignore[import-untyped]
 from mcp.types import TextContent, Tool
 
 from ..odoo.client import OdooClient
@@ -158,6 +159,27 @@ TOOLS = [
 ]
 
 
+# Field names per (odoo url, db, login, model). Module-level on purpose: vault-linked
+# users get a fresh OdooClient on every request, so a per-client cache is discarded
+# each time. Keyed by login too, because field visibility depends on the user's groups.
+_FIELDS_CACHE_TTL_SECONDS = 600
+_FIELDS_CACHE: TTLCache = TTLCache(maxsize=512, ttl=_FIELDS_CACHE_TTL_SECONDS)
+
+
+def clear_fields_cache() -> None:
+    _FIELDS_CACHE.clear()
+
+
+async def cached_model_fields(client: OdooClient, model: str) -> set[str]:
+    key = (client.url, client.db, client.username, model)
+    cached = _FIELDS_CACHE.get(key)
+    if cached is not None:
+        return cached
+    fields = set(await client.fields_get(model))
+    _FIELDS_CACHE[key] = fields
+    return fields
+
+
 async def _validate_domain(client: OdooClient, model: str, domain: list) -> None:
     """Raise OdooValidationError if domain references a field the model
     doesn't have, instead of letting Odoo fail deep inside XML-RPC with an
@@ -168,7 +190,7 @@ async def _validate_domain(client: OdooClient, model: str, domain: list) -> None
     if not referenced:
         return
 
-    model_fields = await client.fields_get(model)
+    model_fields = await cached_model_fields(client, model)
     unknown = sorted(f for f in referenced if f != "id" and f not in model_fields)
     if unknown:
         raise OdooValidationError(

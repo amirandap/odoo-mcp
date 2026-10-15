@@ -21,6 +21,12 @@ services:
       retries: 3
       start_period: 10s
     restart: unless-stopped
+    # json-file logs grow without bound by default; cap them.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     # Only needed if USER_KEY_VAULT_PATH/USER_KEY_VAULT_ENCRYPTION_KEY are set
     # (per-user Odoo credential vault, see odoo/user_vault.py). Mount a
     # DIRECTORY, not a single file: without a volume the vault file only

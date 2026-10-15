@@ -170,6 +170,17 @@ class OdooClient:
 
         return await self.execute(model, "search_read", domain, **kwargs)
 
+    async def read_group(
+        self,
+        model: str,
+        domain: list,
+        fields: list[str],
+        groupby: list[str],
+    ) -> list[dict]:
+        """Aggregate query (one row per group, with ``__count``) - lets Odoo
+        sum server-side instead of shipping every line over XML-RPC."""
+        return await self.execute(model, "read_group", domain, fields, groupby, lazy=False)
+
     async def read(
         self,
         model: str,
