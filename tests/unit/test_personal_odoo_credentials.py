@@ -80,6 +80,69 @@ class TestNoVaultEntryUnchangedBehavior:
         assert captured["client"] is http_server_module.odoo_client
 
 
+def _raise_auth_error(monkeypatch, module):
+    from odoo_mcp_server.odoo.exceptions import OdooAuthenticationError
+
+    async def failing_execute_tool(name, arguments, client, **kwargs):
+        raise OdooAuthenticationError("Authentication failed - check credentials")
+
+    monkeypatch.setattr(module, "execute_tool", failing_execute_tool)
+
+
+class TestOdooAuthenticationFailureMessage:
+    """A rejected Odoo credential must say so, not surface as a generic 500."""
+
+    async def test_rejected_personal_credential_tells_user_to_renew_their_key(
+        self, http_server_module, monkeypatch, vault
+    ):
+        monkeypatch.setattr(http_server_module, "user_vault", vault)
+        vault.put_credentials("alice@example.com", "alice@acme.odoo", "revoked-key")
+        _raise_auth_error(monkeypatch, http_server_module)
+
+        user = {"email": "alice@example.com", "scopes": []}
+        params = {"name": "count_records", "arguments": {"model": "res.partner"}}
+
+        with pytest.raises(HTTPException) as exc_info:
+            await http_server_module.handle_tools_call(params, user)
+
+        assert exc_info.value.status_code == 502
+        detail = exc_info.value.detail
+        assert "personal Odoo API key" in detail
+        assert "renew" in detail
+        assert "revoked-key" not in detail
+        assert "alice@acme.odoo" not in detail
+
+    async def test_rejected_shared_credential_points_at_the_administrator(
+        self, http_server_module, monkeypatch
+    ):
+        _raise_auth_error(monkeypatch, http_server_module)
+
+        user = {"email": "bob@example.com", "scopes": ["odoo.read"]}
+        params = {"name": "count_records", "arguments": {"model": "res.partner"}}
+
+        with pytest.raises(HTTPException) as exc_info:
+            await http_server_module.handle_tools_call(params, user)
+
+        assert exc_info.value.status_code == 502
+        detail = exc_info.value.detail
+        assert "administrator" in detail
+        assert "personal" not in detail
+
+    async def test_other_errors_still_return_generic_message(self, http_server_module, monkeypatch):
+        async def boom(name, arguments, client, **kwargs):
+            raise RuntimeError("secret internal detail")
+
+        monkeypatch.setattr(http_server_module, "execute_tool", boom)
+        user = {"email": "bob@example.com", "scopes": ["odoo.read"]}
+        params = {"name": "count_records", "arguments": {"model": "res.partner"}}
+
+        with pytest.raises(HTTPException) as exc_info:
+            await http_server_module.handle_tools_call(params, user)
+
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == "Internal error executing tool"
+
+
 class TestPersonalCredentialOverride:
     async def test_crud_tool_uses_personal_client_when_vault_has_entry(
         self, http_server_module, monkeypatch, vault
