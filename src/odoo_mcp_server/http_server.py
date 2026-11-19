@@ -33,6 +33,7 @@ from .oauth.resource_server import (
 )
 from .oauth.user_mapping import EmployeeNotFoundError, get_employee_for_user
 from .odoo.client import OdooClient
+from .odoo.exceptions import OdooAuthenticationError
 from .odoo.user_vault import build_user_vault
 from .resources import read_resource, register_resources
 from .tools import execute_tool, register_tools, tool_group_for
@@ -1250,9 +1251,32 @@ async def handle_tools_call(params: dict, user: dict) -> dict:
         }
     except HTTPException:
         raise
+    except OdooAuthenticationError:
+        # A rejected credential is actionable (renew the key), so say so
+        # instead of the generic 500 - without echoing any credential data.
+        logger.warning(
+            "Odoo rejected credentials for tool %s (personal_credential=%s, user=%s)",
+            tool_name,
+            personal_client is not None,
+            user.get("email"),
+        )
+        raise HTTPException(status_code=502, detail=_odoo_auth_failure_detail(personal_client is not None))
     except Exception as e:
         logger.exception(f"Error executing tool {tool_name}: {type(e).__name__}")
         raise HTTPException(status_code=500, detail="Internal error executing tool")
+
+
+def _odoo_auth_failure_detail(personal_credential: bool) -> str:
+    """User-facing message for an Odoo ACCESS_DENIED, by which credential was used."""
+    if personal_credential:
+        return (
+            "Odoo rejected your personal Odoo API key (it may have expired or been revoked). "
+            "Create a new API key in Odoo and ask an administrator to renew it for this server."
+        )
+    return (
+        "Odoo rejected the server's service-account credentials. "
+        "Contact an administrator to renew the server's Odoo API key."
+    )
 
 
 async def handle_resources_list(user: dict) -> dict:
