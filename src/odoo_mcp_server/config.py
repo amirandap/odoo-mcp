@@ -38,6 +38,23 @@ OAUTH_SCOPES = {
     "odoo.sign.write": "Send and cancel signature requests",
 }
 
+# ClickUp tools (optional "clickup" group). Gated like the generic CRUD tools:
+# odoo.read / odoo.write are only granted to CRUD_ADMIN_EMAILS.
+CLICKUP_READ_TOOLS = (
+    "clickup_whoami",
+    "clickup_hierarchy",
+    "clickup_find_tasks",
+    "clickup_get_task",
+    "clickup_list_comments",
+)
+CLICKUP_WRITE_TOOLS = (
+    "clickup_create_task",
+    "clickup_update_task",
+    "clickup_set_custom_field",
+    "clickup_add_comment",
+    "clickup_checklist",
+)
+
 # Write-bearing scopes. Used to derive a read-only scope set (see read_only_scopes).
 WRITE_SCOPES = {
     "odoo.write",
@@ -95,6 +112,10 @@ TOOL_SCOPE_REQUIREMENTS = {
     "delete_record": ["odoo.write"],
     "count_records": ["odoo.read"],
     "list_models": ["odoo.read"],
+
+    # ClickUp tools (Admin only - same allowlist as generic CRUD)
+    **{name: ["odoo.read"] for name in CLICKUP_READ_TOOLS},
+    **{name: ["odoo.write"] for name in CLICKUP_WRITE_TOOLS},
 }
 
 # =============================================================================
@@ -118,6 +139,7 @@ WRITE_TOOLS = [
     "delete_record",
     "send_signature_request",
     "cancel_signature_request",
+    *CLICKUP_WRITE_TOOLS,
 ]
 
 UPLOAD_TOOLS = [
@@ -206,7 +228,7 @@ class Settings(BaseSettings):
     dms_allowed_folders: str = "Contracts,Identity"
     dms_restricted_folders: str = "Background Checks,Offboarding Documents"
 
-    # Tool groups to expose, comma-separated. Available: "crud", "employee", "reports".
+    # Tool groups to expose, comma-separated. Available: "crud", "employee", "reports", "clickup".
     # ("sign" is controlled by sign_module_enabled, but may also be listed here.)
     # Examples: "crud" for a generic admin bridge, "employee" for self-service only.
     enabled_tool_groups: str = "crud,employee"
@@ -225,6 +247,21 @@ class Settings(BaseSettings):
     # OCA Sign module (sign_oca). Disabled by default because it requires the
     # community `sign_oca` addon (sign.oca.* models). Enable to expose the sign tools.
     sign_module_enabled: bool = False
+
+    # ClickUp tools (opt-in: list "clickup" in ENABLED_TOOL_GROUPS). Named accounts,
+    # JSON object of account name -> ClickUp personal API token (pk_...), e.g.
+    #   CLICKUP_ACCOUNTS={"ops": "pk_...", "sales": "pk_..."}
+    # Tokens must be distinct. Every tool takes an optional `account`; a failing
+    # account is never retried with another one.
+    clickup_accounts: dict[str, str] = {}
+    clickup_workspace_id: str | None = None
+    # Optional identity pin: account name -> expected ClickUp user id. The token is
+    # checked against GET /user before its first use (once per process).
+    clickup_account_user_ids: dict[str, int] = {}
+    # Account used when a tool call omits `account` (default: first in CLICKUP_ACCOUNTS).
+    clickup_default_account: str | None = None
+    # Time zone for date-only inputs ("2026-10-20", "today") and returned dates.
+    clickup_timezone: str = "UTC"
 
     # API key authentication (for CLI clients like Claude Code that can't do browser OAuth)
     mcp_api_key: str | None = None  # Secret key loaded from GCP Secret Manager

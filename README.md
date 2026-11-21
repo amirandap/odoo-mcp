@@ -122,6 +122,20 @@ Disabled by default. Requires the community **OCA `sign_oca`** addon
 `list_sign_templates`, `send_signature_request`, `download_signed_document`,
 `cancel_signature_request`.
 
+### ClickUp — optional (CRUD admins only)
+
+Native ClickUp REST tools, disabled by default. Add `clickup` to
+`ENABLED_TOOL_GROUPS` and set `CLICKUP_ACCOUNTS` (JSON `{"name": "pk_..."}`) and
+`CLICKUP_WORKSPACE_ID`; the server refuses to start if either is missing. Tools:
+`clickup_whoami`, `clickup_hierarchy`, `clickup_find_tasks`, `clickup_get_task`,
+`clickup_list_comments` (need `odoo.read`) and `clickup_create_task`,
+`clickup_update_task`, `clickup_set_custom_field`, `clickup_add_comment`,
+`clickup_checklist` (need `odoo.write`). Every tool takes an optional `account`;
+a failing account is never retried with another one, and tokens never appear in
+responses or errors. Lists can be referenced by ID, `Space/Folder/List` path or
+unique name, people by ID, email, username or `me`; ambiguous references fail
+with the options instead of guessing.
+
 ## Optional Features
 
 These default to stock-Odoo-safe values, so the server works against a vanilla
@@ -133,6 +147,7 @@ Odoo with no extra configuration.
 | `EMPLOYEE_CUSTOM_FIELDS` | JSON map of output key → custom `hr.employee` field, e.g. `{"preferred_name":"x_preferred_name","division":"x_division"}`. Surfaced on `get_my_profile`. |
 | `DMS_ALLOWED_FOLDERS` / `DMS_RESTRICTED_FOLDERS` | Comma-separated document folder names employees may see vs. must never see. |
 | `SIGN_MODULE_ENABLED` | Expose the OCA Sign tools (requires the `sign_oca` addon). |
+| `CLICKUP_ACCOUNTS` / `CLICKUP_WORKSPACE_ID` | Required with the `clickup` tool group. Optional: `CLICKUP_ACCOUNT_USER_IDS`, `CLICKUP_DEFAULT_ACCOUNT`, `CLICKUP_TIMEZONE` (default `UTC`). |
 | `INTERNAL_EMAIL_DOMAIN` | Users whose email matches this domain receive extended write scopes. |
 | `YOLO_MODE` | `read` = no-auth read-only (only read tools exposed); `true` = no-auth full access. For trusted/local use only. |
 
